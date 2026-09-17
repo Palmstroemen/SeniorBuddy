@@ -6,6 +6,9 @@ __pycache__/
 # Lokale Nutzerdaten -- NIEMALS committen, enthält persönliche Gespräche
 server/data/*.sqlite3
 
+# Honeypot-Koederdatei -- wird bei jedem Start neu angelegt
+server/data/.honeypot/
+
 # IDE
 .vscode/
 .idea/

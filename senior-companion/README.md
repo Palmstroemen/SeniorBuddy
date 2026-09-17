@@ -20,24 +20,83 @@ cd senior-companion
 ./deploy/setup.sh
 cd server
 source .venv/bin/activate
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Danach im Browser (auf dem Server-Gerät oder von einem Tablet im
-selben Netzwerk) öffnen:
+Danach im Browser auf demselben Rechner öffnen: `http://127.0.0.1:8000`.
+Für den Zugriff von einem Tablet (egal ob im selben Raum oder von
+unterwegs) siehe **Fernzugriff** unten – der Server bindet bewusst nur
+an `127.0.0.1` und ist ohne diesen Schritt von keinem anderen Gerät aus
+erreichbar.
 
-```
-http://<server-ip>:8000
+## Fernzugriff (Tailscale, keine offenen Ports)
+
+Der Dienst horcht nie auf einer öffentlich oder im LAN erreichbaren
+Adresse – weder für Wartung noch für Tablets. Grund: ein Rechner mit
+lokalem LLM/GPU ist ein attraktives Ziel für automatisierte
+Kryptominer-Botnetze, die gezielt nach offenen Ports scannen. Statt
+Ports zu öffnen, treten Server **und** jedes Tablet demselben
+[Tailscale](https://tailscale.com)-Tailnet bei (WireGuard-VPN,
+geräteweise Authentifizierung):
+
+```bash
+# Auf dem Server (macht deploy/setup.sh bereits mit):
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+# Dienst im Tailnet freigeben, ohne dass uvicorn selbst nach aussen bindet:
+sudo tailscale serve --bg 8000
 ```
 
-Auf dem Tablet: über das Browser-Menü "Zum Startbildschirm hinzufügen"
-wählen, damit die Web-App wie eine normale App aussieht.
+`tailscale serve` liefert dabei automatisch ein gültiges HTTPS-Zertifikat
+für den Tailnet-Hostnamen (z. B. `https://senior-pc.<tailnet>.ts.net`)
+– Chat-Nachrichten laufen damit durchgehend verschlüsselt, nie im
+Klartext über irgendein Netzwerksegment. Genaue Befehle können sich je
+nach Tailscale-Version leicht unterscheiden; `tailscale serve --help`
+zeigt die für die installierte Version passende Syntax.
+
+Jedes Tablet installiert ebenfalls Tailscale (App aus dem jeweiligen
+Store) und tritt demselben Tailnet bei – danach ist die Tailnet-URL von
+dort aus erreichbar, exakt wie eine normale Internetadresse, aber für
+niemanden ausserhalb des Tailnets sichtbar oder erreichbar.
+
+## Honeypot (Alarm bei unbefugtem Zugriff)
+
+Falls die Härtung oben doch umgangen wird (z. B. ein kompromittiertes
+Tailnet-Gerät oder physischer Zugriff auf den Rechner), gibt es zwei
+Fallen, die kein legitimer Teil der App je berührt – jede Berührung
+löst sofort eine Push-Benachrichtigung über [ntfy.sh](https://ntfy.sh)
+aus (kein Account nötig):
+
+1. Eine Honeyfile (`server/data/.honeypot/zugangsdaten.txt`, wird beim
+   Start automatisch angelegt), überwacht per `inotify`.
+2. Köder-API-Routen (`/api/admin/backup`, `/.env` u. a.), die nach
+   typischen Angriffszielen klingen.
+
+Einrichtung:
+
+```bash
+# Eigenen, geheimen Topic-Namen erzeugen (nicht erraten koennen):
+openssl rand -hex 16
+```
+
+Diesen Wert als Umgebungsvariable `SENIOR_COMPANION_NTFY_TOPIC` setzen
+(z. B. `sudo systemctl edit senior-companion` → im Editor unter
+`[Service]` die Zeile `Environment=SENIOR_COMPANION_NTFY_TOPIC=<wert>`
+einfügen) und denselben Topic-Namen in der ntfy-App oder unter
+`https://ntfy.sh/<topic>` im Browser abonnieren. Ohne gesetzten Topic
+bleibt der Alarm nur im systemd-Journal sichtbar (`journalctl -u
+senior-companion`), es wird aber nichts nach außen geschickt.
+
+**Bekannte Fehlalarm-Quelle:** Backup-/Sync-Werkzeuge, die den ganzen
+`server/data/`-Ordner erfassen, lösen beim Lesen selbst einen Alarm
+aus – `server/data/.honeypot/` sollte deshalb von jedem Backup-Job
+ausgeschlossen werden.
 
 ## Mehrere Personen (ein gemeinsamer Server, mehrere Tablets)
 
 Jedes Tablet bekommt beim Einrichten eine eigene URL mit
-`?user=<name>`, z. B. `http://<server-ip>:8000/?user=maria`. Vor
-"Zum Startbildschirm hinzufügen" diese URL im Browser öffnen – das
+`?user=<name>`, z. B. `https://senior-pc.<tailnet>.ts.net/?user=maria`.
+Vor "Zum Startbildschirm hinzufügen" diese URL im Browser öffnen – das
 Tablet merkt sich damit dauerhaft, zu wem es gehört, ohne
 Login-Bildschirm. Im Transparenz-Panel (ⓘ) steht das aktive Profil zur
 Kontrolle.
@@ -94,4 +153,5 @@ Installation in `PERSONA_GENDER` in `server/config.py` (Default:
 
 Dies ist das Grundgerüst für Phase 1 (Test mit 1–2 Personen). Siehe
 `docs/ARCHITECTURE.md`, Abschnitt "Bewusst nicht in Phase 1 enthalten"
-für den Ausbaupfad (RAG, Mehrbenutzer-Scheduling, Story-Export, u. a.).
+für den Ausbaupfad (Story-Export, Fernwartungs-Backend, Slot-Management
+bei vielen gleichzeitigen Senior:innen, u. a.).

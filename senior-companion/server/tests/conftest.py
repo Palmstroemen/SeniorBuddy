@@ -32,6 +32,9 @@ def _run_from_server_dir():
 def _isolated_data_dir(tmp_path, monkeypatch):
     import memory
     import knowledge
+    import honeypot
     monkeypatch.setattr(memory, "DATA_DIR", tmp_path)
     monkeypatch.setattr(knowledge, "KNOWLEDGE_DIR", tmp_path / "knowledge")
+    monkeypatch.setattr(honeypot, "HONEYPOT_DIR", tmp_path / ".honeypot")
+    monkeypatch.setattr(honeypot, "HONEYFILE", tmp_path / ".honeypot" / "zugangsdaten.txt")
     yield tmp_path

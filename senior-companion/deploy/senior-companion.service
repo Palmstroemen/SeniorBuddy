@@ -1,15 +1,49 @@
 [Unit]
 Description=Senior-Korrespondenz-System (Backend)
-After=network.target
+After=network.target tailscaled.service
+Wants=tailscaled.service
 
 [Service]
 Type=simple
 # Pfad anpassen, falls das Repo woanders liegt:
 WorkingDirectory=/opt/senior-companion/server
-ExecStart=/opt/senior-companion/server/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+# Bindet NUR an localhost - erreichbar wird der Dienst ausschliesslich
+# ueber "tailscale serve" (siehe README, Abschnitt "Fernzugriff"), nie
+# direkt ueber LAN oder gar das offene Internet. Kein offener Port,
+# also auch keine Angriffsflaeche fuer automatisierte Scans/Kryptominer-
+# Botnetze, die gezielt nach erreichbaren Ollama-/GPU-Rechnern suchen.
+ExecStart=/opt/senior-companion/server/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=5
 User=senior-companion
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+# --- Haertung -----------------------------------------------------------
+# Der Dienst braucht ausser Netzwerk (localhost zu Ollama, ausgehend zu
+# von Plugins freigegebenen Domains) und Lese-/Schreibzugriff auf das
+# eigene Datenverzeichnis nichts. Alles andere wird explizit verboten,
+# damit ein kompromittierter Prozess (z.B. durch eine Sicherheitsluecke
+# in einer Abhaengigkeit) moeglichst wenig anrichten kann.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/senior-companion/server/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target

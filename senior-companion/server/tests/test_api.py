@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
+import honeypot
 import knowledge
 import main
 import memory
@@ -387,3 +388,23 @@ def test_senior_chat_preempts_running_raw_chat(monkeypatch):
             preempt_msg = raw_ws.receive_json()
 
     assert preempt_msg == {"type": "preempted"}
+
+
+# --- Honeypot: Koeder-Routen ---------------------------------------------
+
+@pytest.mark.parametrize("path", [
+    "/api/admin/backup",
+    "/api/admin/export",
+    "/api/facts/all",
+    "/.env",
+])
+def test_honeypot_route_returns_plain_404_and_alerts(path, monkeypatch):
+    alerts = []
+    monkeypatch.setattr(honeypot, "alert", lambda msg: alerts.append(msg))
+
+    with TestClient(main.app) as client:
+        r = client.get(path)
+
+    assert r.status_code == 404
+    assert len(alerts) == 1
+    assert path in alerts[0]

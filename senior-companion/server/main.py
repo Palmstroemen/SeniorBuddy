@@ -9,13 +9,15 @@ Modelle sind gepullt (siehe README.md).
 """
 import asyncio
 import logging
+import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import honeypot
 import knowledge
 import llm_client
 import memory
@@ -39,9 +41,12 @@ RAW_SYSTEM_PROMPT = "Du bist ein hilfreicher Assistent."
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler_module.setup_scheduler()
+    honeypot_stop = threading.Event()
+    honeypot.start_watching(honeypot_stop)
     log.info("Geladene Plugins: %s", list(plugins.keys()))
     yield
     scheduler_module.shutdown_scheduler()
+    honeypot_stop.set()
 
 
 app = FastAPI(title="Senior-Korrespondenz-System", lifespan=lifespan)
@@ -294,6 +299,25 @@ async def raw_chat(websocket: WebSocket):
 
     except WebSocketDisconnect:
         log.info("Roher Chat getrennt")
+
+
+# ---------------------------------------------------------------------
+# Honeypot: Koeder-Routen, die kein echter Client je aufruft. Antwort
+# ist ein unauffaelliger 404 - verraet nicht, dass es eine Falle war.
+# Zweite Falle (Honeyfile) laeuft ueber honeypot.start_watching() in
+# lifespan().
+# ---------------------------------------------------------------------
+
+@app.get("/api/admin/backup")
+@app.get("/api/admin/export")
+@app.get("/api/facts/all")
+@app.get("/.env")
+async def _honeypot_route(request: Request):
+    honeypot.alert(
+        f"Koeder-Route aufgerufen: {request.url.path} "
+        f"von {request.client.host if request.client else '?'}"
+    )
+    raise HTTPException(404, "Not Found")
 
 
 # ---------------------------------------------------------------------
