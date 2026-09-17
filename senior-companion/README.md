@@ -73,6 +73,11 @@ Persona-Modelle stehen in [`server/config.py`](server/config.py).
 Modellnamen müssen mit `ollama list` übereinstimmen bzw. vorher per
 `ollama pull <name>` geladen werden.
 
+Jede Persona hat einen Namen und drei Text-/Stimm-Varianten
+(`neutral`/`weiblich`/`maennlich`); welche aktiv ist, steht pro
+Installation in `PERSONA_GENDER` in `server/config.py` (Default:
+`neutral`). Ändern = Wert eintragen, Server neu starten.
+
 ## Neues Plugin hinzufügen
 
 1. Ordner unter `server/plugins/<mein_plugin>/` anlegen

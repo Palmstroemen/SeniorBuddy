@@ -7,6 +7,7 @@ Start (Entwicklung):
 Voraussetzung: Ollama laeuft lokal und die in config.py referenzierten
 Modelle sind gepullt (siehe README.md).
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 import knowledge
 import llm_client
 import memory
+import priority
 import security
 from config import PERSONAS, FALLBACK_PERSONA, KNOWLEDGE_PERSONAS
 from plugins.dispatch import find_triggered_plugin, run_plugin
@@ -29,6 +31,9 @@ log = logging.getLogger("main")
 
 plugins = discover_plugins()
 guard = security.BasicGuard()
+
+# System-Prompt fuer /ws/raw - bewusst ohne Persona, siehe dort.
+RAW_SYSTEM_PROMPT = "Du bist ein hilfreicher Assistent."
 
 
 @asynccontextmanager
@@ -207,18 +212,88 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
                         )
 
             full_response = ""
-            async for token in llm_client.stream(
-                persona.model, persona.system_prompt, chat_messages,
-                max_tokens=persona.max_tokens,
-            ):
-                full_response += token
-                await websocket.send_json({"type": "token", "content": token})
+            priority.senior_stream_started()
+            try:
+                async for token in llm_client.stream(
+                    persona.model, persona.system_prompt, chat_messages,
+                    max_tokens=persona.max_tokens,
+                ):
+                    full_response += token
+                    await websocket.send_json({"type": "token", "content": token})
+            finally:
+                priority.senior_stream_finished()
 
             memory.add_message(user_id, persona.id, "assistant", full_response)
             await websocket.send_json({"type": "done"})
 
     except WebSocketDisconnect:
         log.info("Verbindung getrennt: %s / %s", user_id, persona_id)
+
+
+# ---------------------------------------------------------------------
+# Ausserordentlicher Nutzer: roher Chat mit niedriger Prioritaet
+#
+# Kein Persona-System-Prompt, kein memory.py (keine Senior-Identitaet,
+# fuer die gespeichert werden koennte), Verlauf nur fuer die Dauer der
+# WebSocket-Verbindung im Speicher. Nutzt das groesste konfigurierte
+# Modell (aktuell der Professor). Laeuft eine Generierung hier, wenn
+# eine Senior-Anfrage beginnt, wird sie aktiv abgebrochen (priority.py)
+# - Ollama kennt sonst keine Prioritaeten und wuerde die Senior-Antwort
+# intern hinter dieser Anfrage einreihen.
+# ---------------------------------------------------------------------
+
+@app.websocket("/ws/raw")
+async def raw_chat(websocket: WebSocket):
+    await websocket.accept()
+    model = PERSONAS["professor"].model  # groesstes konfiguriertes Modell
+    chat_history: list[dict] = []
+
+    try:
+        while True:
+            user_text = await websocket.receive_text()
+
+            input_check = guard.check_input(user_text)
+            if not input_check["ok"]:
+                await websocket.send_json({
+                    "type": "blocked", "reason": input_check["rule"],
+                })
+                continue
+
+            chat_history.append({"role": "user", "content": user_text})
+
+            if priority.senior_stream_active():
+                await websocket.send_json({"type": "waiting"})
+                await priority.wait_until_idle()
+
+            tokens: list[str] = []
+
+            async def collect():
+                async for token in llm_client.stream(
+                    model, RAW_SYSTEM_PROMPT, chat_history, max_tokens=1024,
+                ):
+                    tokens.append(token)
+                    await websocket.send_json({"type": "token", "content": token})
+
+            gen_task = asyncio.create_task(collect())
+            priority.register_low_priority_task(gen_task)
+            try:
+                await gen_task
+            except asyncio.CancelledError:
+                # Nutzerfrage bleibt im Verlauf, die unfertige
+                # Teilantwort wird verworfen - ein abgeschnittener
+                # Kontext wuerde das Modell beim naechsten Turn nur
+                # verwirren.
+                await websocket.send_json({"type": "preempted"})
+                continue
+            finally:
+                priority.unregister_low_priority_task(gen_task)
+
+            full_response = "".join(tokens)
+            chat_history.append({"role": "assistant", "content": full_response})
+            await websocket.send_json({"type": "done"})
+
+    except WebSocketDisconnect:
+        log.info("Roher Chat getrennt")
 
 
 # ---------------------------------------------------------------------
