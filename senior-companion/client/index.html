@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0">
+<title>Meine Gespräche</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#4A5D52">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <nav class="persona-tabs" id="personaTabs" aria-label="Gesprächspartner wählen">
+    <!-- wird per JS aus /api/personas befüllt -->
+  </nav>
+  <button class="transparency-btn" id="transparencyBtn" aria-label="Was wurde geteilt?">
+    ⓘ
+  </button>
+</header>
+
+<main class="chat-area" id="chatArea" aria-live="polite">
+  <div class="welcome">
+    <p>Tippe unten etwas, oder halte den Mikrofon-Knopf gedrückt, um zu sprechen.</p>
+  </div>
+</main>
+
+<footer class="composer">
+  <button class="mic-btn" id="micBtn" aria-label="Sprechen">🎙️</button>
+  <textarea id="textInput" class="text-input" rows="1"
+            placeholder="Schreib etwas …" aria-label="Nachricht eingeben"></textarea>
+  <button class="send-btn" id="sendBtn" aria-label="Senden">Senden</button>
+</footer>
+
+<!-- Transparenz-Panel: zeigt, was tatsächlich nach draußen geschickt wurde -->
+<div class="panel-overlay" id="panelOverlay" hidden>
+  <section class="panel" role="dialog" aria-label="Was wurde geteilt?">
+    <h2>Was wurde heute nach draußen geschickt?</h2>
+    <p class="panel-intro">Diese Liste zeigt jede Anfrage, die das System an das Internet geschickt hat.</p>
+    <p class="panel-user" id="panelUser"></p>
+    <ul id="transparencyList" class="transparency-list"></ul>
+
+    <h3>Zusatz-Funktionen (Plugins)</h3>
+    <ul id="pluginList" class="plugin-list"></ul>
+
+    <button class="panel-close" id="panelClose">Schließen</button>
+  </section>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+name: Grundlegende Prüfungen
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Abhängigkeiten installieren
+        run: pip install -r server/requirements.txt
+
+      - name: Tests ausführen
+        run: cd server && python -m pytest -v
+
+      - name: Plugin-Manifeste validieren
+        run: |
+          python - <<'EOF'
+          import json, glob, sys
+
+          required = {"id", "name", "description"}
+          ok = True
+          for path in glob.glob("server/plugins/*/manifest.json"):
+              with open(path, encoding="utf-8") as f:
+                  data = json.load(f)
+              missing = required - data.keys()
+              if missing:
+                  print(f"{path}: fehlende Felder {missing}")
+                  ok = False
+          sys.exit(0 if ok else 1)
+          EOF

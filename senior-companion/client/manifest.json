@@ -1,0 +1,13 @@
+{
+  "name": "Meine Gespräche",
+  "short_name": "Gespräche",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FBF6EE",
+  "theme_color": "#4A5D52",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

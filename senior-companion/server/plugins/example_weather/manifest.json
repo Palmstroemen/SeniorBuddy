@@ -1,0 +1,9 @@
+{
+  "id": "weather",
+  "name": "Wetter",
+  "description": "Fragt das aktuelle Wetter fuer den Wohnort ab, damit die Personas z.B. sagen koennen, ob heute ein Spaziergang gut waere.",
+  "needs_internet": true,
+  "internet_domains": ["api.open-meteo.com"],
+  "allowed_personas": ["freundin", "reporter", "professor"],
+  "trigger_keywords": ["wetter", "regen", "regnet", "sonne", "spazieren"]
+}
