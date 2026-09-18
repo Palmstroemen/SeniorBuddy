@@ -54,9 +54,15 @@ nur im Chat-Verlauf existieren.
   – das Datenmodell (`story_fragments`, `consent_status`) existiert
   schon in `memory.py`, aber der Verdichtungs-/Exportprozess selbst
   ist noch zu bauen.
-- **Offline-STT/TTS auf dem Tablet** – Phase 1 nutzt die Web Speech API
-  des Browsers (online, geräteabhängig). Der Wechsel zu whisper.cpp
-  (WASM) betrifft ausschließlich `client/js/app.js`.
+- **Offline-STT/TTS direkt im Browser (WASM)** – ursprünglich als
+  whisper.cpp-WASM-Umstieg angedacht; stattdessen umgesetzt als
+  **serverseitige Alternative** (`speech-service/`, `faster-whisper` +
+  `Piper`, siehe unten), weil zwei ältere Tablets im Testbetrieb
+  schwächer als aktuelle Modelle sind – Rechenlast lieber auf den
+  Server verlagern als im Browser stemmen. Web Speech API bleibt
+  Standard-Fallback, beides ist pro Tablet umschaltbar. Ein echter
+  WASM-Weg direkt im Browser bleibt eine Option, falls beide Server
+  irgendwann nicht mehr ausreichen.
 
 ## Warum Ollama statt direkt llama.cpp?
 
@@ -117,3 +123,37 @@ schicken.
   `inotify` statt Zeitstempel-Polling, weil viele Systeme inzwischen
   mit `noatime`/`relatime` mounten, wo ein Lesezugriff die Zugriffszeit
   gar nicht mehr verändert.
+
+## Sprachdienst (STT/TTS)
+
+`speech-service/` ist ein **eigener Prozess mit eigenem venv**, genau
+wie Ollama nicht Teil von `server/` ist – `server/speech_client.py`
+spricht per HTTP damit, wie `llm_client.py` mit Ollama. Bewusste
+Abweichung vom Referenzprojekt YulYens_AI: dort laufen `faster-whisper`
+und `Piper` direkt im Haupt-Prozess importiert (geprüft: kein
+separater Dienst, "Einfachheit vor Ressourcen-Isolation" war dort die
+bewusste Wahl). Hier ist die Isolation aber genau der Punkt – zwei
+ältere Tablets im Testbetrieb sollen nicht durch Serverlast ausgebremst
+werden, und der Server (mehrkerniger Mini-PC) soll dem Sprachdienst bei
+Bedarf gezielt einzelne Kerne zuweisen können (`AllowedCPUs=` in
+`speech-service/deploy/speech-service.service`, vorbereitet, aber
+bewusst nicht aktiviert – erst nach echter Messung, nicht vorab).
+
+**Keine Integration mit `priority.py`** – bewusst geprüft und
+verworfen: `priority.py` regelt Konkurrenz um *Ollama*-Generierungen
+(die Ollama intern serialisiert). Der Sprachdienst ist ein komplett
+separater Prozess mit eigenem Ressourcenpool und konkurriert nicht auf
+dieselbe Weise; eine Vermischung der beiden Mechanismen würde nur
+Verwirrung stiften.
+
+Persona → Stimme läuft über das schon bestehende `voice_id`-Feld in
+`PersonaVariant` (`server/config.py`) – bis hierher ein toter
+Platzhalter seit der ersten Persona-Runde, jetzt ein echter
+Piper-Stimmenname. Wie bei Ollama-Modellnamen muss die Stimmdatei
+separat geladen werden (`speech-service/setup.sh` lädt eine, weitere
+Stimmen sind im Quellcode schon korrekt benannt, aber nicht
+mitgeliefert – Download-Hinweis in README.md).
+
+Umschaltbar pro Tablet (`localStorage`, wie die `?user=`-Geräte-Identität),
+nicht pro Installation – die Tablets sind unterschiedlich leistungsstark,
+die Entscheidung ist also wirklich pro Gerät sinnvoll, nicht global.

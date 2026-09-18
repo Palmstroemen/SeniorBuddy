@@ -1,0 +1,50 @@
+[Unit]
+Description=Sprachdienst (STT/TTS) fuer das Senior-Korrespondenz-System
+After=network.target
+
+[Service]
+Type=simple
+# Pfad anpassen, falls das Repo woanders liegt:
+WorkingDirectory=/opt/senior-companion/speech-service
+# Nur lokal erreichbar - ausschliesslich vom Chat-Server (server/)
+# aufgerufen, nie direkt von aussen.
+ExecStart=/opt/senior-companion/speech-service/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8100
+Restart=on-failure
+RestartSec=5
+User=senior-companion
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+# Nach Messung ggf. aktivieren, um den Sprachdienst von den fuer
+# Ollama/den Chat-Server reservierten Kernen fernzuhalten (siehe
+# docs/ARCHITECTURE.md, Abschnitt Sprachdienst). Bewusst NICHT
+# standardmaessig an - erst pinnen, wenn eine echte Messung Konkurrenz
+# zeigt, nicht vorab:
+# AllowedCPUs=2-3
+
+# --- Haertung (identische Direktiven wie senior-companion.service, mit
+# einer bewussten Ausnahme: KEIN MemoryDenyWriteExecute=true - onnxruntime/
+# ctranslate2 sind native Inferenz-Bibliotheken, bei denen das ungetestet
+# ist und im schlimmsten Fall den Dienst zum Absturz bringen koennte; ohne
+# echte Messung auf der Zielmaschine wird das hier nicht riskiert) -------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/senior-companion/speech-service/voices
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

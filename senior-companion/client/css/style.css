@@ -252,6 +252,24 @@ body {
   margin-bottom: 10px;
 }
 
+.speech-setting {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 18px;
+}
+
+.speech-setting select {
+  font-size: 18px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+}
+
 .panel-close {
   width: 100%;
   margin-top: 12px;

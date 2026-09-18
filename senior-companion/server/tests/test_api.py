@@ -7,6 +7,7 @@ import honeypot
 import knowledge
 import main
 import memory
+import speech_client
 
 
 @pytest.fixture(autouse=True)
@@ -408,3 +409,68 @@ def test_honeypot_route_returns_plain_404_and_alerts(path, monkeypatch):
     assert r.status_code == 404
     assert len(alerts) == 1
     assert path in alerts[0]
+
+
+# --- Sprachdienst: /api/stt + /api/tts (speech_client gemockt) ----------
+
+def test_stt_endpoint_returns_transcribed_text(monkeypatch):
+    captured = {}
+
+    async def fake_transcribe(audio_bytes, filename="aufnahme.webm"):
+        captured["audio_bytes"] = audio_bytes
+        captured["filename"] = filename
+        return "Hallo, wie geht es dir?"
+
+    monkeypatch.setattr(speech_client, "transcribe", fake_transcribe)
+
+    with TestClient(main.app) as client:
+        r = client.post(
+            "/api/stt",
+            files={"audio": ("aufnahme.webm", b"fake-audio-bytes", "audio/webm")},
+        )
+
+    assert r.status_code == 200
+    assert r.json() == {"text": "Hallo, wie geht es dir?"}
+    assert captured["audio_bytes"] == b"fake-audio-bytes"
+
+
+def test_tts_endpoint_returns_audio_using_persona_voice(monkeypatch):
+    captured = {}
+
+    async def fake_synthesize(text, voice):
+        captured["text"] = text
+        captured["voice"] = voice
+        return b"RIFF....WAVEfake"
+
+    monkeypatch.setattr(speech_client, "synthesize", fake_synthesize)
+
+    with TestClient(main.app) as client:
+        r = client.post(
+            "/api/tts",
+            json={"text": "Schön, dass du da bist!", "persona_id": "freundin"},
+        )
+
+    assert r.status_code == 200
+    assert r.content == b"RIFF....WAVEfake"
+    assert r.headers["content-type"] == "audio/wav"
+    assert captured["text"] == "Schön, dass du da bist!"
+    assert captured["voice"] == main.PERSONAS["freundin"].voice_id
+
+
+def test_tts_endpoint_falls_back_to_default_persona_for_unknown_id(monkeypatch):
+    captured = {}
+
+    async def fake_synthesize(text, voice):
+        captured["voice"] = voice
+        return b"wav-bytes"
+
+    monkeypatch.setattr(speech_client, "synthesize", fake_synthesize)
+
+    with TestClient(main.app) as client:
+        r = client.post(
+            "/api/tts",
+            json={"text": "Test", "persona_id": "does_not_exist"},
+        )
+
+    assert r.status_code == 200
+    assert captured["voice"] == main.PERSONAS[main.FALLBACK_PERSONA].voice_id

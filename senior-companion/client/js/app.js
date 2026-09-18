@@ -14,6 +14,15 @@ function resolveUserId() {
 }
 const USER_ID = resolveUserId();
 
+// Spracherkennung/-ausgabe: "device" (Web Speech API, Standard) oder
+// "server" (eigener Sprachdienst, siehe speech-service/ - fuer
+// schwaechere Tablets). Pro Geraet gemerkt wie USER_ID.
+function loadSetting(key, fallback) {
+  return localStorage.getItem(key) || fallback;
+}
+let sttMode = loadSetting("senior_companion_stt_mode", "device");
+let ttsMode = loadSetting("senior_companion_tts_mode", "device");
+
 let currentPersona = null;
 let socket = null;
 
@@ -103,11 +112,17 @@ textInput.addEventListener("keydown", (e) => {
   }
 });
 
-// --- Sprache: Web Speech API (Browser-eigen, kein Server-Roundtrip) --
-// Hinweis: Erkennungsqualitaet und Sprachverfuegbarkeit haengen vom
-// Geraet/Browser ab. Fuer echtes Offline-STT/TTS ist ein Umstieg auf
-// whisper.cpp (WASM) bzw. ein lokales TTS-Modell vorgesehen (siehe
-// docs/ARCHITECTURE.md) - das aendert nur diese Datei, nicht das Backend.
+// --- Sprache: Geraet (Web Speech API) oder Server (speech-service/) --
+// Hinweis Geraet-Modus: Erkennungsqualitaet und Sprachverfuegbarkeit
+// haengen vom Geraet/Browser ab; Chrome schickt die Aufnahme dabei an
+// Googles Server (siehe docs/ARCHITECTURE.md). Der Server-Modus laeuft
+// komplett lokal (Tailnet), siehe README, Abschnitt "Sprache auf dem
+// Server".
+
+function showLatencyNotice(text) {
+  const bubble = addBubble(text, "notice");
+  setTimeout(() => bubble.remove(), 4000);
+}
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognizer = null;
@@ -122,17 +137,101 @@ if (SpeechRecognition) {
     sendMessage();
   });
   recognizer.addEventListener("end", () => micBtn.classList.remove("recording"));
+}
 
+let mediaRecorder = null;
+let mediaStream = null;
+let recordedChunks = [];
+let isServerRecording = false;
+
+async function startServerRecording() {
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    addBubble("Mikrofonzugriff wurde nicht erlaubt.", "notice");
+    return;
+  }
+  recordedChunks = [];
+  mediaRecorder = new MediaRecorder(mediaStream);
+  mediaRecorder.addEventListener("dataavailable", (e) => {
+    if (e.data.size > 0) recordedChunks.push(e.data);
+  });
+  mediaRecorder.start();
+  isServerRecording = true;
+  micBtn.classList.add("recording");
+}
+
+async function stopServerRecording() {
+  isServerRecording = false;
+  micBtn.classList.remove("recording");
+
+  const stopped = new Promise((resolve) => {
+    mediaRecorder.addEventListener("stop", resolve, { once: true });
+  });
+  mediaRecorder.stop();
+  await stopped;
+  mediaStream.getTracks().forEach((track) => track.stop());
+
+  const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || "audio/webm" });
+  const start = performance.now();
+  try {
+    const form = new FormData();
+    form.append("audio", blob, "aufnahme.webm");
+    const res = await fetch("/api/stt", { method: "POST", body: form });
+    if (!res.ok) throw new Error("Sprachdienst antwortete mit Fehler");
+    const data = await res.json();
+    const seconds = ((performance.now() - start) / 1000).toFixed(1);
+    showLatencyNotice(`Spracherkennung (Server): ${seconds}s`);
+    if (data.text) {
+      textInput.value = data.text;
+      sendMessage();
+    }
+  } catch (err) {
+    addBubble("Spracherkennung auf dem Server war nicht erreichbar.", "notice");
+  }
+}
+
+if (SpeechRecognition || navigator.mediaDevices) {
   micBtn.addEventListener("click", () => {
-    micBtn.classList.add("recording");
-    recognizer.start();
+    if (sttMode === "server") {
+      if (!isServerRecording) startServerRecording();
+      else stopServerRecording();
+    } else if (recognizer) {
+      micBtn.classList.add("recording");
+      recognizer.start();
+    }
   });
 } else {
   micBtn.disabled = true;
   micBtn.title = "Spracherkennung wird von diesem Browser nicht unterstützt.";
 }
 
-function speak(text) {
+async function speak(text) {
+  if (!text) return;
+  if (ttsMode === "server") {
+    const start = performance.now();
+    try {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, persona_id: currentPersona }),
+      });
+      if (!res.ok) throw new Error("Sprachdienst antwortete mit Fehler");
+      const blob = await res.blob();
+      const seconds = ((performance.now() - start) / 1000).toFixed(1);
+      showLatencyNotice(`Sprachausgabe (Server): ${seconds}s`);
+      new Audio(URL.createObjectURL(blob)).play();
+    } catch (err) {
+      // Stiller Fallback aufs Geraet - die Antwort soll trotzdem
+      // hoerbar sein, auch wenn der Sprachdienst gerade nicht laeuft.
+      speakOnDevice(text);
+    }
+    return;
+  }
+  speakOnDevice(text);
+}
+
+function speakOnDevice(text) {
   if (!window.speechSynthesis || !text) return;
   const utter = new SpeechSynthesisUtterance(text);
   utter.lang = "de-AT";
@@ -147,10 +246,23 @@ document.getElementById("panelClose").addEventListener("click", () => {
   panelOverlay.hidden = true;
 });
 
+const sttModeSelect = document.getElementById("sttModeSelect");
+const ttsModeSelect = document.getElementById("ttsModeSelect");
+sttModeSelect.addEventListener("change", (e) => {
+  sttMode = e.target.value;
+  localStorage.setItem("senior_companion_stt_mode", sttMode);
+});
+ttsModeSelect.addEventListener("change", (e) => {
+  ttsMode = e.target.value;
+  localStorage.setItem("senior_companion_tts_mode", ttsMode);
+});
+
 async function openPanel() {
   panelOverlay.hidden = false;
 
   document.getElementById("panelUser").textContent = `Profil auf diesem Gerät: ${USER_ID}`;
+  sttModeSelect.value = sttMode;
+  ttsModeSelect.value = ttsMode;
 
   const logRes = await fetch(`/api/transparency/${USER_ID}`);
   const log = await logRes.json();

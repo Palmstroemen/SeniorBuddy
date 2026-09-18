@@ -30,7 +30,10 @@ class PersonaVariant:
     Stimmprofil aendern sich."""
     display_name: str
     system_prompt: str
-    voice_id: str = ""  # Platzhalter fuer TTS-Stimmprofil auf dem Tablet
+    # Piper-Stimmenname (ohne .onnx), z.B. "de_DE-kerstin-low" - nur
+    # relevant, wenn TTS auf dem Server laeuft (siehe speech-service/).
+    # Muss dort unter voices/<voice_id>.onnx liegen (speech-service/setup.sh).
+    voice_id: str = ""
 
 
 @dataclass
@@ -67,7 +70,7 @@ PERSONAS: dict[str, PersonaConfig] = {
         variants={
             "neutral": PersonaVariant(
                 display_name="Robin",
-                voice_id="warm_neutral_1",
+                voice_id="de_DE-thorsten-low",
                 system_prompt=(
                     "Du bist Robin, eine warmherzige, tratschfreudige "
                     "Gespraechsperson im Kontakt mit einer aelteren Person. "
@@ -90,7 +93,7 @@ PERSONAS: dict[str, PersonaConfig] = {
             ),
             "weiblich": PersonaVariant(
                 display_name="Robin (die Freundin)",
-                voice_id="warm_female_1",
+                voice_id="de_DE-kerstin-low",
                 system_prompt=(
                     "Du bist Robin, eine warmherzige, tratschfreudige "
                     "Freundin im Gespraech mit einer aelteren Person. Du "
@@ -113,7 +116,7 @@ PERSONAS: dict[str, PersonaConfig] = {
             ),
             "maennlich": PersonaVariant(
                 display_name="Robin (der Freund)",
-                voice_id="warm_male_1",
+                voice_id="de_DE-thorsten-low",
                 system_prompt=(
                     "Du bist Robin, ein warmherziger, tratschfreudiger "
                     "Freund im Gespraech mit einer aelteren Person. Du "
@@ -143,7 +146,7 @@ PERSONAS: dict[str, PersonaConfig] = {
         variants={
             "neutral": PersonaVariant(
                 display_name="Alex",
-                voice_id="warm_neutral_2",
+                voice_id="de_DE-karlsson-low",
                 system_prompt=(
                     "Du bist Alex, eine geduldige, einfuehlsame "
                     "Gespraechsperson, die gut zuhoert und die "
@@ -163,7 +166,7 @@ PERSONAS: dict[str, PersonaConfig] = {
             ),
             "weiblich": PersonaVariant(
                 display_name="Alex (die Lebensreporterin)",
-                voice_id="warm_female_2",
+                voice_id="de_DE-ramona-low",
                 system_prompt=(
                     "Du bist Alex, eine geduldige, einfuehlsame "
                     "Zuhoererin, die die Lebensgeschichte der Person "
@@ -183,7 +186,7 @@ PERSONAS: dict[str, PersonaConfig] = {
             ),
             "maennlich": PersonaVariant(
                 display_name="Alex (der Lebensreporter)",
-                voice_id="warm_male_2",
+                voice_id="de_DE-karlsson-low",
                 system_prompt=(
                     "Du bist Alex, ein geduldiger, einfuehlsamer Zuhoerer, "
                     "der die Lebensgeschichte der Person sammelt. Du "
@@ -210,7 +213,7 @@ PERSONAS: dict[str, PersonaConfig] = {
         variants={
             "neutral": PersonaVariant(
                 display_name="Wallner",
-                voice_id="calm_neutral_1",
+                voice_id="de_DE-pavoque-low",
                 system_prompt=(
                     "Du bist Wallner, eine bedaechtige, freundliche "
                     "pensionierte Fachperson mit langjaehriger "
@@ -230,7 +233,7 @@ PERSONAS: dict[str, PersonaConfig] = {
             ),
             "weiblich": PersonaVariant(
                 display_name="Professorin Wallner",
-                voice_id="calm_female_1",
+                voice_id="de_DE-kerstin-low",
                 system_prompt=(
                     "Du bist Professorin Wallner, eine bedaechtige, "
                     "freundliche pensionierte Universitaetsprofessorin im "
@@ -249,7 +252,7 @@ PERSONAS: dict[str, PersonaConfig] = {
             ),
             "maennlich": PersonaVariant(
                 display_name="Professor Wallner",
-                voice_id="calm_male_1",
+                voice_id="de_DE-pavoque-low",
                 system_prompt=(
                     "Du bist Professor Wallner, ein bedaechtiger, "
                     "freundlicher pensionierter Universitaetsprofessor im "
@@ -280,7 +283,7 @@ PERSONAS: dict[str, PersonaConfig] = {
         variants={
             "neutral": PersonaVariant(
                 display_name="Toni",
-                voice_id="clear_neutral_1",
+                voice_id="de_DE-thorsten-low",
                 system_prompt=(
                     "Du bist Toni, eine ruhige, kompetente Fachperson fuer "
                     "Technik im Gespraech mit einer aelteren Person. Du "
@@ -308,7 +311,7 @@ PERSONAS: dict[str, PersonaConfig] = {
             ),
             "weiblich": PersonaVariant(
                 display_name="Toni (die Technikerin)",
-                voice_id="clear_female_1",
+                voice_id="de_DE-ramona-low",
                 system_prompt=(
                     "Du bist Toni, eine ruhige, kompetente Technikerin im "
                     "Gespraech mit einer aelteren Person. Du bist "
@@ -336,7 +339,7 @@ PERSONAS: dict[str, PersonaConfig] = {
             ),
             "maennlich": PersonaVariant(
                 display_name="Toni (der Techniker)",
-                voice_id="clear_male_1",
+                voice_id="de_DE-thorsten-low",
                 system_prompt=(
                     "Du bist Toni, ein ruhiger, kompetenter Techniker im "
                     "Gespraech mit einer aelteren Person. Du bist "

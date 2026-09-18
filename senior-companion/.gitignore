@@ -9,6 +9,10 @@ server/data/*.sqlite3
 # Honeypot-Koederdatei -- wird bei jedem Start neu angelegt
 server/data/.honeypot/
 
+# Piper-Stimmmodelle -- wie Ollama-Modelle nicht im Repo, siehe
+# speech-service/setup.sh
+speech-service/voices/
+
 # IDE
 .vscode/
 .idea/

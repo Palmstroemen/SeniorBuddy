@@ -101,6 +101,39 @@ Tablet merkt sich damit dauerhaft, zu wem es gehört, ohne
 Login-Bildschirm. Im Transparenz-Panel (ⓘ) steht das aktive Profil zur
 Kontrolle.
 
+## Sprache auf dem Server (optional)
+
+Standardmäßig laufen Spracherkennung und -ausgabe im Browser (Web
+Speech API) – bequem, aber auf älteren/schwächeren Tablets spürbar
+langsamer, und die Erkennung läuft in Chrome über Googles Server statt
+lokal. Alternative: ein eigener, lokaler Sprachdienst
+(`speech-service/`, separater Prozess mit eigenem venv – wie Ollama
+nicht Teil von `server/`), der `faster-whisper` (Erkennung) und
+`Piper` (Ausgabe) nutzt. Umschaltbar pro Tablet im Transparenz-Panel
+(ⓘ → "Sprache") – nach jeder Aufnahme/Ausgabe erscheint kurz die
+gebrauchte Zeit, zum Vergleichen zwischen Geräte- und Server-Modus.
+
+```bash
+cd speech-service
+./setup.sh          # venv, Abhaengigkeiten, eine Test-Stimme (~60 MB)
+source .venv/bin/activate
+uvicorn main:app --host 127.0.0.1 --port 8100
+```
+
+Für Dauerbetrieb: `speech-service/deploy/speech-service.service` wie
+`senior-companion.service` einrichten (siehe unten). Jede Persona hat
+in `server/config.py` eine eigene Piper-Stimme (`voice_id`) – weitere
+Stimmen liegen unter
+[huggingface.co/rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE),
+werden nach `speech-service/voices/` gelegt (genau wie Ollama-Modelle
+erst per `ollama pull` geladen werden müssen).
+
+**CPU-Isolation:** falls der Sprachdienst spürbar mit den Personas um
+Rechenzeit konkurriert, kann `speech-service/deploy/speech-service.service`
+über die dort vorbereitete (auskommentierte) `AllowedCPUs=`-Zeile auf
+bestimmte Kerne beschränkt werden – bewusst erst nach einer echten
+Messung aktivieren, nicht vorsorglich.
+
 ## Tests (TDD)
 
 Für neue Funktionen gilt: Test zuerst schreiben (rot sehen), dann
@@ -119,11 +152,12 @@ pytest -v
 ## Struktur
 
 ```
-server/     FastAPI-Backend, Personas, Speicher, Plugins, Scheduler
-client/     PWA (Chat-Oberfläche, läuft im Browser des Tablets/Handys)
-plugins/    liegt unter server/plugins/ – jedes Plugin: manifest.json + plugin.py
-deploy/     systemd-Service + Setup-Skript für den Dauerbetrieb
-docs/       Architekturentscheidungen
+server/         FastAPI-Backend, Personas, Speicher, Plugins, Scheduler
+speech-service/ optionaler Sprachdienst (STT/Piper-TTS), eigener Prozess
+client/         PWA (Chat-Oberfläche, läuft im Browser des Tablets/Handys)
+plugins/        liegt unter server/plugins/ – jedes Plugin: manifest.json + plugin.py
+deploy/         systemd-Service + Setup-Skript für den Dauerbetrieb
+docs/           Architekturentscheidungen
 ```
 
 ## Eigene Modelle konfigurieren

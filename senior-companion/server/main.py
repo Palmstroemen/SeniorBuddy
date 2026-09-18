@@ -12,7 +12,7 @@ import logging
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -23,6 +23,7 @@ import llm_client
 import memory
 import priority
 import security
+import speech_client
 from config import PERSONAS, FALLBACK_PERSONA, KNOWLEDGE_PERSONAS
 from plugins.dispatch import find_triggered_plugin, run_plugin
 from plugins.loader import discover_plugins
@@ -142,6 +143,33 @@ def add_fact(user_id: str, body: FactUpdate):
         raise HTTPException(400, f"Wert wurde vom Guard blockiert (Regel={check['rule']})")
     memory.add_fact(user_id, body.key, body.value, body.source_persona)
     return {"user_id": user_id, "key": body.key, "value": body.value}
+
+
+# ---------------------------------------------------------------------
+# Sprachdienst (optional, siehe speech-service/): Spracherkennung und
+# -ausgabe koennen wahlweise auf dem Server laufen statt im Browser -
+# fuer schwaechere Tablets. Kein zusaetzlicher Guard-Aufruf noetig:
+# transkribierter Text durchlaeuft guard.check_input() ohnehin, sobald
+# er als Chat-Nachricht gesendet wird; zu synthetisierender Text ist
+# immer die bereits generierte Antwort einer Persona.
+# ---------------------------------------------------------------------
+
+@app.post("/api/stt")
+async def speech_to_text(audio: UploadFile):
+    text = await speech_client.transcribe(await audio.read(), audio.filename or "aufnahme.webm")
+    return {"text": text}
+
+
+class TTSRequest(BaseModel):
+    text: str
+    persona_id: str
+
+
+@app.post("/api/tts")
+async def text_to_speech(body: TTSRequest):
+    persona = PERSONAS.get(body.persona_id) or PERSONAS[FALLBACK_PERSONA]
+    audio_bytes = await speech_client.synthesize(body.text, persona.voice_id)
+    return Response(content=audio_bytes, media_type="audio/wav")
 
 
 # ---------------------------------------------------------------------

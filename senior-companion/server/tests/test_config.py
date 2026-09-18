@@ -28,7 +28,18 @@ def test_persona_gender_is_configurable(monkeypatch):
     assert persona.display_name != persona.variants["neutral"].display_name
 
 
-def test_each_variant_has_a_distinct_voice_id():
+def test_weiblich_and_maennlich_have_distinct_real_piper_voices():
     for persona in config.PERSONAS.values():
-        voice_ids = {v.voice_id for v in persona.variants.values()}
-        assert len(voice_ids) == 3
+        weiblich = persona.variants["weiblich"].voice_id
+        maennlich = persona.variants["maennlich"].voice_id
+        assert weiblich and maennlich
+        assert weiblich != maennlich
+
+
+def test_neutral_reuses_the_maennlich_voice():
+    """Piper hat keine geschlechtsneutrale Stimme - 'neutral' bekommt
+    bewusst dieselbe Stimme wie 'maennlich' (nur der Text bleibt
+    neutral formuliert), statt eine vierte, nicht existierende Stimme
+    vorzutaeuschen."""
+    for persona in config.PERSONAS.values():
+        assert persona.variants["neutral"].voice_id == persona.variants["maennlich"].voice_id
