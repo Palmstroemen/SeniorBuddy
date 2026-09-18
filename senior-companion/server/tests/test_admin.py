@@ -118,6 +118,7 @@ def test_admin_stats_has_expected_fields():
     assert "guard_input_blocks" in data["problems"]
     assert "guard_context_blocks" in data["problems"]
     assert "plugin_failures" in data["problems"]
+    assert "pending_deletion_directives" in data
 
 
 def test_admin_stats_usage_and_sentiment_reflect_real_users():
@@ -230,3 +231,58 @@ def test_update_status_returns_log_tail():
         r = client.get("/admin/update/status", headers=ADMIN_HEADERS)
     assert r.status_code == 200
     assert "alles gut" in r.json()["log"]
+
+
+# --- Todesfall-Bestaetigung ------------------------------------------------
+
+def test_confirm_death_requires_auth():
+    with TestClient(main.app) as client:
+        r = client.post(
+            "/admin/confirm-death/deathtest_user", json={"confirm_user_id": "deathtest_user"}
+        )
+    assert r.status_code == 401
+
+
+def test_confirm_death_rejects_mismatched_confirm_user_id():
+    with TestClient(main.app) as client:
+        r = client.post(
+            "/admin/confirm-death/deathtest_user",
+            json={"confirm_user_id": "jemand_anderes"},
+            headers=ADMIN_HEADERS,
+        )
+    assert r.status_code == 400
+
+
+def test_confirm_death_executes_pending_directives_and_preserves_the_rest():
+    import memory
+    memory.add_message(
+        "deathtest_user2", "freundin", "user", "Vertraulich ueber Heinrich",
+        topic="Heinrich",
+    )
+    memory.record_deletion_directive(
+        "deathtest_user2", "freundin", "Heinrich", "im Todesfall loeschen",
+        mode="on_death",
+    )
+    memory.add_message("deathtest_user2", "freundin", "user", "Ganz normales Gespraech")
+    memory.add_fact("deathtest_user2", "enkel_name", "Max")
+    memory.add_story_fragment("deathtest_user2", "story_1", "Eine schoene Geschichte")
+
+    with TestClient(main.app) as client:
+        r = client.post(
+            "/admin/confirm-death/deathtest_user2",
+            json={"confirm_user_id": "deathtest_user2"},
+            headers=ADMIN_HEADERS,
+        )
+    assert r.status_code == 200
+    assert r.json()["directives_executed"] == 1
+
+    remaining = memory.recent_messages("deathtest_user2", "freundin", limit=20)
+    assert len(remaining) == 1
+    assert remaining[0]["content"] == "Ganz normales Gespraech"
+    # Fakten und Lebensgeschichten bleiben fuer die Hinterbliebenen erhalten.
+    assert memory.list_facts("deathtest_user2")[0]["value"] == "Max"
+    with memory.get_db("deathtest_user2") as db:
+        story = db.execute(
+            "SELECT content FROM story_fragments WHERE story_id='story_1'"
+        ).fetchone()
+    assert story["content"] == "Eine schoene Geschichte"

@@ -430,6 +430,108 @@ def test_non_technikerin_replies_are_not_captured_as_feedback(monkeypatch):
     assert memory.list_feedback("checkin_user4") == []
 
 
+# --- Sicheres Loeschen auf Wunsch / Todesfall ----------------------------
+
+def _chat_turn(client, user_id, persona_id, text):
+    with client.websocket_connect(f"/ws/chat/{user_id}/{persona_id}") as ws:
+        ws.send_text(text)
+        while ws.receive_json()["type"] != "done":
+            pass
+
+
+def test_confidential_signal_opens_topic_and_naming_activates_it(monkeypatch):
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Alles klar, das bleibt unter uns."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        _chat_turn(client, "secret_user1", "freundin", "Das bleibt aber unter uns, ja?")
+        injected = [m for m in captured["messages"] if m["role"] == "system"]
+        assert any("nennen" in m["content"].lower() for m in injected)
+        assert memory.active_topic("secret_user1", "freundin") is None
+
+        _chat_turn(client, "secret_user1", "freundin", "Heinrich")
+        assert memory.active_topic("secret_user1", "freundin") == "Heinrich"
+
+    with memory.get_db("secret_user1") as db:
+        row = db.execute(
+            "SELECT topic FROM messages WHERE content='Heinrich'"
+        ).fetchone()
+    assert row["topic"] == "Heinrich"
+
+
+def test_delete_now_asks_for_confirmation_before_deleting(monkeypatch):
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Verstanden."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        _chat_turn(client, "secret_user2", "freundin", "Das bleibt aber unter uns.")
+        _chat_turn(client, "secret_user2", "freundin", "Heinrich")
+        _chat_turn(client, "secret_user2", "freundin", "Er war mein grosse Liebe.")
+        _chat_turn(
+            client, "secret_user2", "freundin",
+            "Bitte lösche alles, was ich dir dazu erzählt habe.",
+        )
+        injected = [m for m in captured["messages"] if m["role"] == "system"]
+        assert any("Heinrich" in m["content"] for m in injected)
+
+    # Noch NICHT geloescht - erst nach Bestaetigung.
+    remaining = memory.recent_messages("secret_user2", "freundin", limit=20)
+    assert any("grosse Liebe" in m["content"] for m in remaining)
+
+
+def test_affirmative_reply_actually_deletes_the_topic(monkeypatch):
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield "Erledigt."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        _chat_turn(client, "secret_user3", "freundin", "Das bleibt aber unter uns.")
+        _chat_turn(client, "secret_user3", "freundin", "Heinrich")
+        _chat_turn(client, "secret_user3", "freundin", "Er war meine grosse Liebe.")
+        _chat_turn(
+            client, "secret_user3", "freundin",
+            "Bitte lösche alles, was ich dir dazu erzählt habe.",
+        )
+        _chat_turn(client, "secret_user3", "freundin", "Ja, bitte löschen.")
+
+    remaining = memory.recent_messages("secret_user3", "freundin", limit=20)
+    assert not any("grosse Liebe" in m["content"] for m in remaining)
+    assert memory.active_topic("secret_user3", "freundin") is None
+
+
+def test_death_directive_is_filed_without_deleting(monkeypatch):
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield "Vermerkt."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        _chat_turn(client, "secret_user4", "freundin", "Das bleibt aber unter uns.")
+        _chat_turn(client, "secret_user4", "freundin", "Heinrich")
+        _chat_turn(client, "secret_user4", "freundin", "Er war meine grosse Liebe.")
+        _chat_turn(
+            client, "secret_user4", "freundin",
+            "Im Falle meines Todes, bitte lösche alles was ich dir zu Heinrich erzählt habe.",
+        )
+
+    remaining = memory.recent_messages("secret_user4", "freundin", limit=20)
+    assert any("grosse Liebe" in m["content"] for m in remaining)
+    pending = memory.pending_directives("secret_user4")
+    assert len(pending) == 1
+    assert pending[0]["topic_label"] == "Heinrich"
+
+
 # --- /ws/raw: Ausserordentlicher Nutzer, niedrige Prioritaet ------------
 
 def test_raw_chat_uses_professor_model_and_no_persona_prompt(monkeypatch):

@@ -270,3 +270,137 @@ Erste Schema-Änderung des Projekts (`messages` bekommt `sentiment`/
 ergänzt fehlende Spalten idempotent per `ALTER TABLE` bei jedem
 `get_db()`-Aufruf, da `CREATE TABLE IF NOT EXISTS` bei bereits
 existierenden Tabellen nichts mehr bewirkt.
+
+## Sicheres Löschen auf Wunsch + Todesfall (`secrecy.py`)
+
+Personen können im Gespräch mit jeder Persona vertrauliche Dinge
+preisgeben und verlangen, dass sie gelöscht werden — sofort oder erst
+im Todesfall ("Im Falle meines Todes, bitte lösche alles was ich dir
+zu Heinrich erzählt habe"). Zwei Design-Entscheidungen, beide bewusst
+gegen die naheliegendere, einfachere Alternative getroffen:
+
+1. **Ein Thema wird aktiv benannt, nicht aus dem Verlauf erraten.**
+   Weder Stichwortsuche noch LLM-Klassifikation entscheiden, welche
+   Nachrichten "zu Heinrich" gehören — bei einer unwiderruflichen
+   Aktion sind falsch-negative (Geheimnis bleibt stehen) und
+   falsch-positive Treffer (Falsches wird gelöscht) beide inakzeptabel.
+   Stattdessen erkennt `secrecy.py` ein Vertraulichkeits-Signal ("das
+   bleibt unter uns" u.ä., `CONFIDENTIAL_RULES`), die Persona fragt
+   einmal nach einem kurzen Namen dafür, und die Antwort im nächsten
+   Zug wird eingefangen — exakt das Zeitfenster-Capture-Muster aus
+   `satisfaction.py` (`memory.capture_topic_label()`,
+   `max_age_seconds`). Ab dann werden alle Nachrichten dieses
+   Austauschs (beide Seiten) mit dem Thema getaggt
+   (`messages.topic`, neue Spalte). Höchstens ein offenes Thema pro
+   Persona gleichzeitig (v1-Vereinfachung) — ein zweites
+   Vertraulichkeits-Signal, während eins bereits offen ist, öffnet
+   kein zweites.
+2. **Eine erkannte "Jetzt löschen"-Anfrage wird nicht sofort
+   ausgeführt.** Die Persona fragt einmal nach ("Soll ich wirklich
+   alles zum Thema 'Heinrich' unwiderruflich löschen?"), erst eine
+   klare Ja-Antwort (`AFFIRMATIVE_RULES`) löst die tatsächliche
+   Löschung aus (`memory.confirm_pending_deletion()`). Anders als bei
+   der (reversiblen) Du/Sie-Umschaltung in `analysis.py`, die bewusst
+   ohne Rückfrage sofort umschaltet — eine falsch erkannte Regel hier
+   würde eine permanente, nicht rückgängig machbare Aktion auslösen.
+
+**Echte, sichere Löschung statt eines Status-Flags:** Das Projekt
+kannte bisher nur "weiches" Löschen (`story_fragments.consent_status
+= 'deleted'` ist eine reine UPDATE-Markierung, der Inhalt bleibt in
+der Datenbankdatei). Für dieses Feature reicht das nicht — `memory.py`
+führt zum ersten Mal ein echtes `DELETE FROM messages ...` aus, gefolgt
+von `memory.vacuum(user_id)`: eine frische, transaktionslose
+`sqlite3.connect()`-Verbindung (VACUUM kann nicht innerhalb einer
+offenen Transaktion laufen, `get_db()`s Context-Manager scheidet dafür
+aus), die die freigegebenen Seiten wirklich aus der Datei entfernt,
+nicht nur aus zukünftigen Abfrageergebnissen. Ein echter Test
+(`test_vacuum_shrinks_file_and_removes_deleted_content_from_disk`)
+schreibt substantiellen Inhalt, löscht ihn, vacuumt, und durchsucht
+danach die **rohen Bytes der .sqlite3-Datei** nach dem gelöschten
+Text — beweist, dass er wirklich weg ist, nicht nur unsichtbar.
+
+**Todesfall-Bestätigung** (`POST /admin/confirm-death/{user_id}`,
+gleiche Bearer-Auth wie alle `/admin/*`-Routen): das System kann einen
+Todesfall nicht selbst erkennen, nur ein vertrauenswürdiger Admin
+(Familienmitglied) bestätigt ihn von außen. `confirm_user_id` im
+Body muss den Pfad-Parameter spiegeln — eine billige, aber wirksame
+Absicherung gegen versehentliches Auslösen (bewusst kein mehrstufiger
+Bestätigungsdialog). Führt `memory.execute_death_directives()` aus:
+löscht NUR die Nachrichten, die zu Themen mit einer offenen
+`on_death`-Löschanweisung gehören, vacuumt einmal am Ende, ist
+idempotent (ein zweiter Aufruf ohne neue offene Anweisungen löscht
+nichts mehr). **Alles andere bleibt unangetastet** — das ist Absicht,
+nicht Zufall: die Pro-Nutzer-SQLite-Datei ist bewusst so gebaut, dass
+sie später an Hinterbliebene übergeben werden kann (siehe
+Grundprinzip 5 oben), der Todesfall darf also nicht pauschal alles
+löschen. `/admin/stats`s `pending_deletion_directives` zeigt pro
+Nutzer:in nur die **Anzahl** offener Todesfall-Anweisungen, nie deren
+Thema oder Inhalt — sonst wäre der Admin-Zugang selbst ein Leck für
+ein Geheimnis, das erst im Todesfall gelöscht werden soll.
+
+**Bewusst v1-Scope:** nur `messages` sind themen-taggbar/löschbar.
+`facts` (kurze Schlüssel/Wert-Fakten) und `story_fragments` (eigener,
+bereits bestehender Consent-Mechanismus) bleiben unberührt — deckt das
+geschilderte Szenario ("was ich dir erzählt habe" = Gesprächsinhalt)
+ab, ohne unnötige Komplexität.
+
+**Das System bewertet den Inhalt eines Themas nicht — bewusste
+Entscheidung.** Ein offenes Thema kann in einer einzigen Sitzung sowohl
+unbedenkliche als auch besonders sensible Gesprächsanteile enthalten
+(Beispiel aus dem Konzeptgespräch: eine Person erzählt sowohl liebevoll
+von einem Onkel als auch von erlittenem Missbrauch durch dieselbe
+Person). Das System kann und soll nicht selbst beurteilen, was "gut"
+oder "schlimm" ist, oder einzelne Sätze innerhalb eines Themas gezielt
+herauslöschen — das wäre eine Anmaßung, die dem Willen der Person nicht
+gerecht würde. Stattdessen gilt: **ein getaggtes Thema ist eine
+Einheit** — wird es gelöscht, wird alles gelöscht, was während dieses
+offenen Themas gesagt wurde, ohne Ausnahme. Möchte die Person einen
+unbedenklichen Teil davon behalten, kann sie ihn jederzeit in einem
+NICHT getaggten Gespräch (außerhalb eines offenen vertraulichen
+Themas) erneut erzählen — dieser Teil bekommt dann kein Topic-Tag und
+bleibt unabhängig von einer späteren Löschung erhalten. Das ist bewusst
+grob, aber einfach zu verstehen und ohne stille inhaltliche Bewertung
+durch das System — echt getestet
+(`test_confirm_pending_deletion_leaves_untagged_mentions_of_the_same_name_alone`):
+eine Erwähnung derselben Person AUSSERHALB eines offenen Themas bleibt
+von einer Löschung unberührt, weil sie nie getaggt wurde — nicht weil
+das System ihren Inhalt als "unbedenklich" eingestuft hätte.
+
+**Ein zweites Leck wurde beim echten Rauchtest gefunden und behoben:**
+die Bestätigungs-Nachricht nach einer Löschung enthielt den Themen-
+Namen im an die KI übergebenen System-Kontext
+(`DELETION_DONE_PROMPT_TEMPLATE.format(label=...)`), damit die Persona
+die Löschung bestätigen kann. Ein kleines lokales Testmodell
+wiederholte den Namen daraufhin in seiner eigenen Antwort — und diese
+Antwort wird (ungetaggt) neu gespeichert, was den Namen direkt nach
+dem Löschen wieder in die Datenbank zurückschreiben würde. Behoben,
+indem `DELETION_DONE_PROMPT` den Namen gar nicht mehr enthält und die
+Persona stattdessen explizit angewiesen wird, ihn NICHT zu wiederholen.
+Eine grundsätzliche Restunsicherheit bleibt: kein Prompt-Text kann zu
+100 % garantieren, dass ein Sprachmodell niemals versehentlich etwas
+Sensibles in einer Antwort erwähnt — das ist ein inhärentes Risiko
+jedes Systems, das ein generatives Modell über ein gerade gelöschtes
+Thema sprechen lässt, keine vollständig lösbare Garantie.
+
+**Ein drittes Leck, ebenfalls per echtem Rauchtest gefunden:** die
+Nachricht, mit der eine Todesfall-Anweisung überhaupt erst erteilt
+wird ("Im Falle meines Todes, bitte lösche alles was ich dir zu X
+erzählt habe" — enthält den Namen selbst), wurde ungetaggt (`topic
+= NULL`) gespeichert, weil `handle_turn()` das Thema im selben
+Gesprächsschritt bereits schloss, *bevor* es das aktuelle Thema für
+die Nachrichten-Taggierung dieses Turns ermittelte. `execute_
+death_directives()` löscht aber nur getaggte Nachrichten — die
+auslösende Anweisung selbst wäre damit nie erfasst worden und hätte
+den Namen dauerhaft im Klartext stehen lassen, selbst nach
+erfolgreicher Ausführung. Behoben durch Umstellen der Reihenfolge:
+das aktive Thema wird VOR einer möglichen Schließung ermittelt und
+für die Taggierung dieses gesamten Turns verwendet (Anfrage der
+Person UND Antwort der Persona) — beide werden dadurch korrekt Teil
+dessen, was später (sofort oder im Todesfall) mitgelöscht wird.
+Beide Lecks zusammen zeigen, warum der echte Byte-Test
+(`test_vacuum_shrinks_file_and_removes_deleted_content_from_disk`
+und der manuelle End-to-End-Rauchtest mit echtem Ollama) hier nicht
+optional war: beide Fehler wären mit rein gemockten Unit-Tests nicht
+aufgefallen, weil dort nie eine echte, vom Modell generierte Antwort
+oder eine vollständige Turn-Reihenfolge über mehrere echte
+Gesprächsschritte hinweg durchlief.

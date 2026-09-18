@@ -62,6 +62,31 @@ CREATE TABLE IF NOT EXISTS feedback (
     reply TEXT,
     reply_ts REAL
 );
+
+-- Vertrauliches Thema pro Persona: "Wie sollen wir das nennen?" -
+-- label bleibt NULL, bis die naechste Antwort ihn einfaengt (siehe
+-- capture_topic_label()). Hoechstens ein offenes Thema pro Persona
+-- gleichzeitig (v1-Vereinfachung).
+CREATE TABLE IF NOT EXISTS active_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    persona TEXT NOT NULL,
+    label TEXT,
+    opened_ts REAL NOT NULL,
+    closed_ts REAL
+);
+
+-- Loeschanweisung zu einem Thema: sofort (nach Bestaetigung) oder erst
+-- im Todesfall. trigger_phrase wird nur fuer Nachvollziehbarkeit
+-- gespeichert, NIE der eigentliche vertrauliche Inhalt.
+CREATE TABLE IF NOT EXISTS deletion_directives (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    persona TEXT NOT NULL,
+    topic_label TEXT NOT NULL,
+    trigger_phrase TEXT NOT NULL,
+    mode TEXT NOT NULL,              -- pending_confirmation|immediate|on_death
+    created_ts REAL NOT NULL,
+    executed_ts REAL
+);
 """
 
 # Wird bei jedem get_db()-Aufruf ausgefuehrt - siehe _migrate().
@@ -81,6 +106,7 @@ def _migrate(conn: sqlite3.Connection):
     for stmt in (
         "ALTER TABLE messages ADD COLUMN sentiment TEXT",
         "ALTER TABLE messages ADD COLUMN stance TEXT",
+        "ALTER TABLE messages ADD COLUMN topic TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -102,11 +128,13 @@ def get_db(user_id: str):
         conn.close()
 
 
-def add_message(user_id: str, persona: str, role: str, content: str):
+def add_message(
+    user_id: str, persona: str, role: str, content: str, topic: str | None = None
+):
     with get_db(user_id) as db:
         db.execute(
-            "INSERT INTO messages (persona, role, content, ts) VALUES (?,?,?,?)",
-            (persona, role, content, time.time()),
+            "INSERT INTO messages (persona, role, content, ts, topic) VALUES (?,?,?,?,?)",
+            (persona, role, content, time.time(), topic),
         )
 
 
@@ -392,3 +420,212 @@ def list_feedback(user_id: str, limit: int = 50) -> list[dict]:
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --- Vertrauliche Themen ("sicheres Loeschen auf Wunsch") ----------------
+#
+# Ein Thema wird NICHT aus dem Gespraechsverlauf erraten (weder per
+# Stichwortsuche noch per LLM) - zu riskant bei einer unwiderruflichen
+# Aktion. Stattdessen wird es aktiv benannt: die Persona fragt einmal
+# nach ("Wie sollen wir das nennen?"), die Antwort im naechsten Zug
+# wird eingefangen (gleiches Zeitfenster-Muster wie
+# record_feedback_reply()). Hoechstens ein offenes/unbenanntes Thema
+# pro Persona gleichzeitig - v1-Vereinfachung.
+
+def open_pending_topic(user_id: str, persona: str) -> int:
+    with get_db(user_id) as db:
+        existing = db.execute(
+            "SELECT id FROM active_topics WHERE persona=? AND label IS NULL "
+            "AND closed_ts IS NULL",
+            (persona,),
+        ).fetchone()
+        if existing:
+            return existing["id"]
+        cur = db.execute(
+            "INSERT INTO active_topics (persona, label, opened_ts) VALUES (?,?,?)",
+            (persona, None, time.time()),
+        )
+        return cur.lastrowid
+
+
+def capture_topic_label(
+    user_id: str, persona: str, label: str, max_age_seconds: float = 600
+) -> bool:
+    cutoff = time.time() - max_age_seconds
+    with get_db(user_id) as db:
+        row = db.execute(
+            "SELECT id FROM active_topics WHERE persona=? AND label IS NULL "
+            "AND closed_ts IS NULL AND opened_ts >= ? ORDER BY opened_ts DESC LIMIT 1",
+            (persona, cutoff),
+        ).fetchone()
+        if row is None:
+            return False
+        db.execute(
+            "UPDATE active_topics SET label=? WHERE id=?", (label, row["id"])
+        )
+        return True
+
+
+def active_topic(user_id: str, persona: str, idle_seconds: float = 86400) -> str | None:
+    """Juengstes offenes, benanntes Thema - aber nur, wenn zuletzt
+    tatsaechlich etwas damit getaggt wurde (oder es gerade erst
+    eroeffnet wurde), nicht laenger als idle_seconds her. Sicherheitsnetz
+    gegen ein wochenaltes, vergessenes Thema, das eine unabhaengige
+    spaetere Erwaehnung desselben Namens wieder einfangen wuerde."""
+    with get_db(user_id) as db:
+        row = db.execute(
+            "SELECT label, opened_ts FROM active_topics WHERE persona=? "
+            "AND label IS NOT NULL AND closed_ts IS NULL "
+            "ORDER BY opened_ts DESC LIMIT 1",
+            (persona,),
+        ).fetchone()
+        if row is None:
+            return None
+        last_activity = db.execute(
+            "SELECT MAX(ts) FROM messages WHERE persona=? AND topic=?",
+            (persona, row["label"]),
+        ).fetchone()[0]
+    reference_ts = last_activity if last_activity is not None else row["opened_ts"]
+    if time.time() - reference_ts > idle_seconds:
+        return None
+    return row["label"]
+
+
+def close_topic(user_id: str, persona: str, label: str):
+    with get_db(user_id) as db:
+        db.execute(
+            "UPDATE active_topics SET closed_ts=? WHERE persona=? AND label=? "
+            "AND closed_ts IS NULL",
+            (time.time(), persona, label),
+        )
+
+
+def list_topics(user_id: str, persona: str) -> list[str]:
+    with get_db(user_id) as db:
+        rows = db.execute(
+            "SELECT label FROM active_topics WHERE persona=? AND label IS NOT NULL "
+            "AND closed_ts IS NULL ORDER BY opened_ts",
+            (persona,),
+        ).fetchall()
+    return [r["label"] for r in rows]
+
+
+# --- Loeschanweisungen -----------------------------------------------------
+#
+# Nach der Ausfuehrung wird nicht nur der Gespraechsinhalt geloescht,
+# sondern auch der Themen-NAME selbst aus active_topics/
+# deletion_directives entfernt bzw. anonymisiert - sonst wuerde "Heinrich"
+# als Audit-Spur permanent im Klartext stehen bleiben und das
+# "sicher"-Versprechen unterlaufen (per echtem Rauchtest gefunden: die
+# Bytes der .sqlite3-Datei enthielten den Namen noch, obwohl die
+# Nachrichten selbst laengst weg waren). executed_ts/mode bleiben fuer
+# die Nachvollziehbarkeit erhalten - nur WAS geloescht wurde, nicht WANN.
+SCRUBBED_LABEL = "[geloescht]"
+
+
+def record_deletion_directive(
+    user_id: str, persona: str, topic_label: str, trigger_phrase: str, mode: str
+) -> int:
+    """mode: 'pending_confirmation' | 'immediate' | 'on_death'"""
+    with get_db(user_id) as db:
+        cur = db.execute(
+            "INSERT INTO deletion_directives "
+            "(persona, topic_label, trigger_phrase, mode, created_ts) "
+            "VALUES (?,?,?,?,?)",
+            (persona, topic_label, trigger_phrase, mode, time.time()),
+        )
+        return cur.lastrowid
+
+
+def confirm_pending_deletion(
+    user_id: str, persona: str, max_age_seconds: float = 600
+) -> str | None:
+    """Fuehrt eine bereits bestaetigte 'jetzt loeschen'-Anfrage aus (der
+    Aufrufer hat die Ja-Antwort schon erkannt, siehe secrecy.py). Findet
+    die juengste offene pending_confirmation-Anweisung innerhalb des
+    Zeitfensters, loescht die getaggten Nachrichten wirklich, entfernt
+    auch den Themen-Namen selbst (active_topics-Zeile, Anonymisierung
+    in deletion_directives) und vacuumt die Datei. Gibt das Thema
+    zurueck (fuer die Bestaetigungs-Antwort DIESES Turns - der Name
+    selbst existiert danach in der Datenbank nicht mehr), oder None,
+    wenn nichts Offenes/Rechtzeitiges gefunden wurde."""
+    cutoff = time.time() - max_age_seconds
+    with get_db(user_id) as db:
+        row = db.execute(
+            "SELECT id, topic_label FROM deletion_directives WHERE persona=? "
+            "AND mode='pending_confirmation' AND executed_ts IS NULL "
+            "AND created_ts >= ? ORDER BY created_ts DESC LIMIT 1",
+            (persona, cutoff),
+        ).fetchone()
+        if row is None:
+            return None
+        topic_label = row["topic_label"]
+        db.execute(
+            "DELETE FROM messages WHERE persona=? AND topic=?",
+            (persona, topic_label),
+        )
+        db.execute(
+            "UPDATE deletion_directives SET executed_ts=?, topic_label=?, "
+            "trigger_phrase=? WHERE id=?",
+            (time.time(), SCRUBBED_LABEL, SCRUBBED_LABEL, row["id"]),
+        )
+        db.execute(
+            "DELETE FROM active_topics WHERE persona=? AND label=?",
+            (persona, topic_label),
+        )
+    vacuum(user_id)
+    return topic_label
+
+
+def vacuum(user_id: str):
+    """VACUUM kann nicht innerhalb einer offenen Transaktion laufen -
+    deshalb eine eigene, frische Verbindung statt get_db()'s Context-
+    Manager. Entfernt geloeschte Inhalte wirklich aus der Datei
+    (freigegebene Seiten), nicht nur aus zukuenftigen Abfrageergebnissen."""
+    conn = sqlite3.connect(db_path_for(user_id))
+    conn.execute("VACUUM")
+    conn.close()
+
+
+def pending_directives(user_id: str) -> list[dict]:
+    """Offene Todesfall-Anweisungen - fuer die Admin-Statistik NUR die
+    Anzahl relevant, nie der Inhalt (sonst waere der Admin-Zugang selbst
+    ein Leck fuer ein Geheimnis, das erst im Todesfall gelöscht werden soll)."""
+    with get_db(user_id) as db:
+        rows = db.execute(
+            "SELECT topic_label, created_ts FROM deletion_directives "
+            "WHERE mode='on_death' AND executed_ts IS NULL"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def execute_death_directives(user_id: str) -> int:
+    """Fuehrt alle offenen Todesfall-Loeschanweisungen aus (aufgerufen
+    von main.py's /admin/confirm-death, nachdem ein Admin den Todesfall
+    bestaetigt hat). Entfernt wie confirm_pending_deletion() auch den
+    Themen-Namen selbst, nicht nur die Nachrichten. Vacuumt am Ende
+    genau EINMAL, nicht pro Anweisung - bei mehreren Themen reicht ein
+    Durchlauf. Idempotent: ein zweiter Aufruf ohne neue offene
+    Anweisungen loescht nichts mehr."""
+    with get_db(user_id) as db:
+        rows = db.execute(
+            "SELECT id, persona, topic_label FROM deletion_directives "
+            "WHERE mode='on_death' AND executed_ts IS NULL"
+        ).fetchall()
+        for row in rows:
+            db.execute(
+                "DELETE FROM messages WHERE persona=? AND topic=?",
+                (row["persona"], row["topic_label"]),
+            )
+            db.execute(
+                "UPDATE deletion_directives SET executed_ts=?, topic_label=?, "
+                "trigger_phrase=? WHERE id=?",
+                (time.time(), SCRUBBED_LABEL, SCRUBBED_LABEL, row["id"]),
+            )
+            db.execute(
+                "DELETE FROM active_topics WHERE persona=? AND label=?",
+                (row["persona"], row["topic_label"]),
+            )
+    if rows:
+        vacuum(user_id)
+    return len(rows)

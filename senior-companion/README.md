@@ -139,6 +139,13 @@ curl -X POST "$BASE/admin/config/satisfaction-interval" \
 # Update anstossen (siehe unten, was dabei passiert) + Status abfragen
 curl -X POST "$BASE/admin/update" -H "Authorization: Bearer $TOKEN"
 curl "$BASE/admin/update/status" -H "Authorization: Bearer $TOKEN"
+
+# Todesfall bestaetigen: fuehrt alle offenen "im Todesfall loeschen"-
+# Anweisungen dieser Person aus (siehe unten). confirm_user_id muss
+# der Pfad-Parameter sein - Schutz gegen versehentliches Ausloesen.
+curl -X POST "$BASE/admin/confirm-death/maria" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"confirm_user_id": "maria"}'
 ```
 
 **Statistik & Zufriedenheit:** `sentiment` in `/admin/stats` kommt aus
@@ -157,6 +164,21 @@ manuell korrigierbar.
 unauthentifizierte `/api/plugins/{id}/toggle` (Teil der offenen
 Senior-Oberfläche) – genauso über das Tailnet fernsteuerbar, kein
 eigener Endpoint nötig.
+
+**Sicheres Löschen auf Wunsch + Todesfall:** In jedem Gespräch kann
+die Person ein vertrauliches Thema markieren ("Das bleibt unter uns")
+– die Persona fragt einmal nach einem kurzen Namen dafür (z. B.
+"Heinrich"), danach kann jederzeit "Bitte lösche alles, was ich dir
+dazu erzählt habe" verlangt werden (löscht nach einer einmaligen
+Rückfrage/Bestätigung wirklich, inkl. `VACUUM` der Datenbankdatei –
+kein bloßes Verstecken) oder "Im Falle meines Todes, lösche alles zu
+Heinrich" (merkt sich das nur, löscht nichts sofort). Ein Todesfall
+wird ausschließlich über den `/admin/confirm-death/{user_id}`-Aufruf
+oben ausgelöst – das System erkennt ihn nicht selbst. Dabei wird
+NUR das markierte Thema gelöscht; Lebensgeschichten, Fakten und alle
+nicht markierten Gespräche bleiben erhalten (die Pro-Person-Datenbank­
+datei ist bewusst so gebaut, dass sie später an Hinterbliebene
+übergeben werden kann, siehe `docs/ARCHITECTURE.md`).
 
 **"Updates einspielen" läuft nicht im App-Prozess selbst.** Ein
 FastAPI-Prozess, der sich mitten im Request neu startet, ist ein

@@ -28,6 +28,7 @@ import llm_client
 import memory
 import priority
 import satisfaction
+import secrecy
 import security
 import speech_client
 from config import PERSONAS, PERSONA_GENDER, FALLBACK_PERSONA, KNOWLEDGE_PERSONAS
@@ -220,13 +221,21 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
                 })
                 continue
 
-            memory.add_message(user_id, persona.id, "user", user_text)
-
             if persona.id == "technikerin":
                 # Reiner Seiteneffekt: ordnet diese Nachricht einer
                 # offenen Zufriedenheits-Nachfrage zu, falls es eine
                 # gibt (No-Op sonst) - aendert den Gespraechsfluss nicht.
                 memory.record_feedback_reply(user_id, persona.id, user_text)
+
+            # Vertrauliche Themen / sicheres Loeschen (secrecy.py) - vor
+            # dem Speichern der Nachricht, damit sie gleich mit dem
+            # ggf. aktiven Thema getaggt werden kann.
+            secrecy_outcome = secrecy.handle_turn(user_id, persona.id, user_text)
+
+            memory.add_message(
+                user_id, persona.id, "user", user_text,
+                topic=secrecy_outcome.topic_for_tagging,
+            )
 
             history = memory.recent_messages(user_id, persona.id, limit=20)
             chat_messages = [
@@ -300,6 +309,9 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
                 })
                 memory.record_feedback_asked(user_id, persona.id)
 
+            for line in secrecy_outcome.system_context:
+                chat_messages.append({"role": "system", "content": line})
+
             full_response = ""
             priority.senior_stream_started()
             try:
@@ -312,7 +324,10 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
             finally:
                 priority.senior_stream_finished()
 
-            memory.add_message(user_id, persona.id, "assistant", full_response)
+            memory.add_message(
+                user_id, persona.id, "assistant", full_response,
+                topic=secrecy_outcome.topic_for_tagging,
+            )
             await websocket.send_json({"type": "done"})
 
     except WebSocketDisconnect:
@@ -458,6 +473,7 @@ def admin_stats():
     external_requests = {}
     story_consent = {}
     persona_usage = {}
+    pending_deletion_directives = {}
     for db_path in sorted(config.DATA_DIR.glob("*.sqlite3")):
         user_id = db_path.stem
         with memory.get_db(user_id) as db:
@@ -468,6 +484,7 @@ def admin_stats():
         external_requests[user_id] = memory.external_request_stats(user_id)
         story_consent[user_id] = memory.story_consent_stats(user_id)
         persona_usage[user_id] = memory.persona_usage_stats(user_id)
+        pending_deletion_directives[user_id] = len(memory.pending_directives(user_id))
 
     return {
         "uptime_seconds": time.time() - _started_at,
@@ -501,7 +518,34 @@ def admin_stats():
             "guard_context_blocks": security.context_block_count(),
             "plugin_failures": plugin_failure_count(),
         },
+        # NUR die Anzahl offener Todesfall-Loeschanweisungen, nie deren
+        # Thema/Inhalt - sonst waere der Admin-Zugang selbst ein Leck
+        # fuer ein Geheimnis, das erst im Todesfall geloescht werden soll.
+        "pending_deletion_directives": pending_deletion_directives,
     }
+
+
+class DeathConfirmation(BaseModel):
+    confirm_user_id: str
+
+
+@app.post(
+    "/admin/confirm-death/{user_id}",
+    dependencies=[Depends(admin_auth.require_admin)],
+)
+def confirm_death(user_id: str, body: DeathConfirmation):
+    """Fuehrt alle offenen Todesfall-Loeschanweisungen fuer diese Person
+    aus. confirm_user_id muss den Pfad-Parameter spiegeln - billige,
+    aber wirksame Absicherung gegen ein versehentliches Ausloesen dieser
+    unwiderruflichen Aktion. Der Rest der Daten (Lebensgeschichten,
+    Fakten, nicht markierte Gespraeche) bleibt unangetastet - fuer die
+    Uebergabe an Hinterbliebene, siehe docs/ARCHITECTURE.md."""
+    if body.confirm_user_id != user_id:
+        raise HTTPException(
+            400, "confirm_user_id muss mit dem Pfad-Parameter uebereinstimmen"
+        )
+    count = memory.execute_death_directives(user_id)
+    return {"user_id": user_id, "directives_executed": count}
 
 
 class SatisfactionIntervalUpdate(BaseModel):

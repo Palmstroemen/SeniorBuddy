@@ -1,4 +1,5 @@
 import sqlite3
+import time
 
 import memory
 
@@ -383,3 +384,367 @@ def test_list_feedback_orders_newest_first():
         )
     rows = memory.list_feedback("ufeed5")
     assert [r["reply"] for r in rows] == ["neu", "alt"]
+
+
+# --- Vertrauliche Themen: Namensvergabe (aktives Thema pro Persona) -----
+
+def test_open_pending_topic_creates_unlabeled_row():
+    topic_id = memory.open_pending_topic("topicname_user", "freundin")
+    assert topic_id is not None
+    with memory.get_db("topicname_user") as db:
+        row = db.execute(
+            "SELECT label, closed_ts FROM active_topics WHERE id=?", (topic_id,)
+        ).fetchone()
+    assert row["label"] is None
+    assert row["closed_ts"] is None
+
+
+def test_open_pending_topic_is_noop_when_one_already_pending():
+    first = memory.open_pending_topic("topicname_user2", "freundin")
+    second = memory.open_pending_topic("topicname_user2", "freundin")
+    assert first == second
+    with memory.get_db("topicname_user2") as db:
+        count = db.execute("SELECT COUNT(*) FROM active_topics").fetchone()[0]
+    assert count == 1
+
+
+def test_capture_topic_label_fills_pending_row_within_window():
+    memory.open_pending_topic("topicname_user3", "freundin")
+    ok = memory.capture_topic_label("topicname_user3", "freundin", "Heinrich")
+    assert ok is True
+    assert memory.active_topic("topicname_user3", "freundin") == "Heinrich"
+
+
+def test_capture_topic_label_noop_when_nothing_pending():
+    ok = memory.capture_topic_label("topicname_user4", "freundin", "Heinrich")
+    assert ok is False
+
+
+def test_capture_topic_label_expires_after_window():
+    with memory.get_db("topicname_user5") as db:
+        db.execute(
+            "INSERT INTO active_topics (persona, label, opened_ts) VALUES (?,?,?)",
+            ("freundin", None, 1000.0),
+        )
+    ok = memory.capture_topic_label(
+        "topicname_user5", "freundin", "Heinrich", max_age_seconds=600
+    )
+    assert ok is False
+
+
+# --- Vertrauliche Themen: aktives Thema + Idle-Sicherheitsnetz ---------
+
+def test_active_topic_returns_none_when_no_topic_opened():
+    assert memory.active_topic("activetopic_user1", "freundin") is None
+
+
+def test_active_topic_returns_label_for_recently_active_topic():
+    memory.open_pending_topic("activetopic_user2", "freundin")
+    memory.capture_topic_label("activetopic_user2", "freundin", "Heinrich")
+    assert memory.active_topic("activetopic_user2", "freundin") == "Heinrich"
+
+
+def test_active_topic_returns_none_for_stale_idle_topic():
+    with memory.get_db("activetopic_user3") as db:
+        db.execute(
+            "INSERT INTO active_topics (persona, label, opened_ts) VALUES (?,?,?)",
+            ("freundin", "Heinrich", time.time() - 90000),  # > 24h her, nichts getaggt
+        )
+    assert memory.active_topic("activetopic_user3", "freundin") is None
+
+
+def test_active_topic_ignores_closed_topics():
+    with memory.get_db("activetopic_user4") as db:
+        db.execute(
+            "INSERT INTO active_topics (persona, label, opened_ts, closed_ts) "
+            "VALUES (?,?,?,?)",
+            ("freundin", "Heinrich", time.time(), time.time()),
+        )
+    assert memory.active_topic("activetopic_user4", "freundin") is None
+
+
+def test_active_topic_is_per_persona():
+    memory.open_pending_topic("activetopic_user5", "freundin")
+    memory.capture_topic_label("activetopic_user5", "freundin", "Heinrich")
+    assert memory.active_topic("activetopic_user5", "reporter") is None
+
+
+def test_close_topic_marks_closed_ts():
+    memory.open_pending_topic("closetopic_user", "freundin")
+    memory.capture_topic_label("closetopic_user", "freundin", "Heinrich")
+    memory.close_topic("closetopic_user", "freundin", "Heinrich")
+    assert memory.active_topic("closetopic_user", "freundin") is None
+
+
+def test_list_topics_returns_only_open_labeled_topics():
+    memory.open_pending_topic("listtopic_user", "freundin")
+    memory.capture_topic_label("listtopic_user", "freundin", "Heinrich")
+    with memory.get_db("listtopic_user") as db:
+        db.execute(
+            "INSERT INTO active_topics (persona, label, opened_ts, closed_ts) "
+            "VALUES (?,?,?,?)",
+            ("freundin", "Altes Thema", time.time(), time.time()),
+        )
+        db.execute(
+            "INSERT INTO active_topics (persona, label, opened_ts) VALUES (?,?,?)",
+            ("freundin", None, time.time()),
+        )
+    topics = memory.list_topics("listtopic_user", "freundin")
+    assert topics == ["Heinrich"]
+
+
+# --- Nachrichten-Taggierung ----------------------------------------------
+
+def test_add_message_stores_topic_when_given():
+    memory.add_message("topic_user", "freundin", "user", "geheim", topic="heinrich")
+    with memory.get_db("topic_user") as db:
+        row = db.execute(
+            "SELECT topic FROM messages WHERE content='geheim'"
+        ).fetchone()
+    assert row["topic"] == "heinrich"
+
+
+def test_add_message_topic_defaults_to_none():
+    memory.add_message("topic_user2", "freundin", "user", "normal")
+    with memory.get_db("topic_user2") as db:
+        row = db.execute(
+            "SELECT topic FROM messages WHERE content='normal'"
+        ).fetchone()
+    assert row["topic"] is None
+
+
+# --- Löschanweisungen: sofort (mit Bestätigung) und im Todesfall -------
+
+def test_record_deletion_directive_creates_row():
+    directive_id = memory.record_deletion_directive(
+        "directive_user", "freundin", "heinrich", "bitte loeschen",
+        mode="pending_confirmation",
+    )
+    assert directive_id is not None
+    with memory.get_db("directive_user") as db:
+        row = db.execute(
+            "SELECT * FROM deletion_directives WHERE id=?", (directive_id,)
+        ).fetchone()
+    assert row["topic_label"] == "heinrich"
+    assert row["mode"] == "pending_confirmation"
+    assert row["executed_ts"] is None
+
+
+def test_confirm_pending_deletion_deletes_messages_and_marks_executed():
+    memory.open_pending_topic("del_user", "freundin")
+    memory.capture_topic_label("del_user", "freundin", "heinrich")
+    memory.add_message(
+        "del_user", "freundin", "user", "Mein Geheimnis ueber Heinrich.",
+        topic="heinrich",
+    )
+    memory.add_message(
+        "del_user", "freundin", "assistant", "Das bleibt unter uns.",
+        topic="heinrich",
+    )
+    memory.add_message("del_user", "freundin", "user", "Ganz normales Gespraech.")
+    memory.record_deletion_directive(
+        "del_user", "freundin", "heinrich", "Bitte loesch das",
+        mode="pending_confirmation",
+    )
+
+    result = memory.confirm_pending_deletion("del_user", "freundin")
+    assert result == "heinrich"
+
+    remaining = memory.recent_messages("del_user", "freundin", limit=20)
+    assert len(remaining) == 1
+    assert remaining[0]["content"] == "Ganz normales Gespraech."
+
+    # Nicht nur die Nachrichten sind weg - auch der Themen-NAME selbst
+    # darf danach in keiner Tabelle mehr im Klartext stehen (sonst
+    # waere die Loeschung nicht wirklich "sicher").
+    with memory.get_db("del_user") as db:
+        row = db.execute(
+            "SELECT executed_ts, topic_label, trigger_phrase FROM deletion_directives"
+        ).fetchone()
+        topics = db.execute("SELECT COUNT(*) FROM active_topics").fetchone()[0]
+    assert row["executed_ts"] is not None
+    assert row["topic_label"] == memory.SCRUBBED_LABEL
+    assert row["trigger_phrase"] == memory.SCRUBBED_LABEL
+    assert topics == 0
+
+
+def test_confirm_pending_deletion_only_touches_matching_persona_and_topic():
+    memory.add_message(
+        "del_user2", "freundin", "user", "geheim", topic="heinrich"
+    )
+    memory.add_message(
+        "del_user2", "professor", "user", "andere Persona, gleicher Name",
+        topic="heinrich",
+    )
+    memory.record_deletion_directive(
+        "del_user2", "freundin", "heinrich", "loesch das", mode="pending_confirmation"
+    )
+    memory.confirm_pending_deletion("del_user2", "freundin")
+    assert memory.recent_messages("del_user2", "freundin", limit=20) == []
+    assert len(memory.recent_messages("del_user2", "professor", limit=20)) == 1
+
+
+def test_confirm_pending_deletion_leaves_untagged_mentions_of_the_same_name_alone():
+    """Kernversprechen des Feature: das Loeschen eines getaggten Themas
+    (z.B. 'Heinrich') basiert NICHT auf einer Stichwortsuche nach dem
+    Namen ueber den gesamten Verlauf - nur was WAEHREND des offenen
+    Themas getaggt wurde, ist betroffen. Eine unabhaengig erzaehlte
+    'gute' Geschichte ueber dieselbe Person (kein aktives Thema zu dem
+    Zeitpunkt, also topic=None) bleibt erhalten."""
+    memory.add_message(
+        "goodstory_user", "freundin", "user",
+        "Heinrich hat mir immer lustige Geschichten von frueher erzaehlt.",
+    )  # kein Thema aktiv -> topic=None, ganz normale Erinnerung
+
+    memory.open_pending_topic("goodstory_user", "freundin")
+    memory.capture_topic_label("goodstory_user", "freundin", "heinrich")
+    memory.add_message(
+        "goodstory_user", "freundin", "user", "Das darf niemand wissen.",
+        topic="heinrich",
+    )
+    memory.record_deletion_directive(
+        "goodstory_user", "freundin", "heinrich", "loesch das",
+        mode="pending_confirmation",
+    )
+    memory.confirm_pending_deletion("goodstory_user", "freundin")
+
+    remaining = memory.recent_messages("goodstory_user", "freundin", limit=20)
+    assert len(remaining) == 1
+    assert "lustige Geschichten" in remaining[0]["content"]
+
+
+def test_confirm_pending_deletion_noop_when_nothing_pending():
+    assert memory.confirm_pending_deletion("del_user3", "freundin") is None
+
+
+def test_confirm_pending_deletion_expires_after_window():
+    memory.add_message("del_user4", "freundin", "user", "geheim", topic="heinrich")
+    with memory.get_db("del_user4") as db:
+        db.execute(
+            "INSERT INTO deletion_directives "
+            "(persona, topic_label, trigger_phrase, mode, created_ts) "
+            "VALUES (?,?,?,?,?)",
+            ("freundin", "heinrich", "loesch das", "pending_confirmation", 1000.0),
+        )
+    result = memory.confirm_pending_deletion(
+        "del_user4", "freundin", max_age_seconds=600
+    )
+    assert result is None
+    assert len(memory.recent_messages("del_user4", "freundin", limit=20)) == 1
+
+
+def test_confirm_pending_deletion_closes_the_topic():
+    memory.open_pending_topic("del_user5", "freundin")
+    memory.capture_topic_label("del_user5", "freundin", "heinrich")
+    memory.record_deletion_directive(
+        "del_user5", "freundin", "heinrich", "loesch das", mode="pending_confirmation"
+    )
+    memory.confirm_pending_deletion("del_user5", "freundin")
+    assert memory.active_topic("del_user5", "freundin") is None
+
+
+# --- Echtes, sicheres Loeschen: VACUUM entfernt Inhalt wirklich von der --
+# --- Platte, nicht nur logisch aus der Abfrage ---------------------------
+
+def test_vacuum_shrinks_file_and_removes_deleted_content_from_disk():
+    secret_text = "Ein ausfuehrliches Geheimnis ueber Heinrich. " * 200
+    memory.add_message("vac_user", "freundin", "user", secret_text, topic="heinrich")
+    path = memory.db_path_for("vac_user")
+    size_before = path.stat().st_size
+    assert b"Heinrich" in path.read_bytes()
+
+    with memory.get_db("vac_user") as db:
+        db.execute("DELETE FROM messages WHERE persona=? AND topic=?", ("freundin", "heinrich"))
+    memory.vacuum("vac_user")
+
+    raw_after = path.read_bytes()
+    assert b"Heinrich" not in raw_after
+    assert path.stat().st_size < size_before
+
+
+# --- Todesfall: gespeicherte Löschanweisungen ausführen -----------------
+
+def test_pending_directives_returns_only_open_on_death_rows():
+    memory.add_message("death_user", "freundin", "user", "geheimnis", topic="heinrich")
+    memory.record_deletion_directive(
+        "death_user", "freundin", "heinrich", "im Todesfall loeschen", mode="on_death"
+    )
+    memory.record_deletion_directive(
+        "death_user", "freundin", "anderes", "sofort loeschen",
+        mode="pending_confirmation",
+    )
+    pending = memory.pending_directives("death_user")
+    assert len(pending) == 1
+    assert pending[0]["topic_label"] == "heinrich"
+
+
+def test_execute_death_directives_deletes_and_marks_executed():
+    memory.open_pending_topic("death_user2", "freundin")
+    memory.capture_topic_label("death_user2", "freundin", "heinrich")
+    memory.add_message(
+        "death_user2", "freundin", "user", "vertraulich ueber Heinrich",
+        topic="heinrich",
+    )
+    memory.add_message("death_user2", "freundin", "user", "ganz normal")
+    memory.record_deletion_directive(
+        "death_user2", "freundin", "heinrich", "im Todesfall loeschen", mode="on_death"
+    )
+
+    count = memory.execute_death_directives("death_user2")
+    assert count == 1
+
+    remaining = memory.recent_messages("death_user2", "freundin", limit=20)
+    assert len(remaining) == 1
+    assert remaining[0]["content"] == "ganz normal"
+
+    # Auch hier: der Themen-Name selbst darf nicht im Klartext
+    # stehenbleiben, nur die Tatsache, DASS etwas ausgefuehrt wurde.
+    with memory.get_db("death_user2") as db:
+        row = db.execute(
+            "SELECT executed_ts, topic_label FROM deletion_directives"
+        ).fetchone()
+        topics = db.execute("SELECT COUNT(*) FROM active_topics").fetchone()[0]
+    assert row["executed_ts"] is not None
+    assert row["topic_label"] == memory.SCRUBBED_LABEL
+    assert topics == 0
+
+
+def test_execute_death_directives_is_idempotent():
+    memory.record_deletion_directive(
+        "death_user3", "freundin", "heinrich", "im Todesfall loeschen", mode="on_death"
+    )
+    first = memory.execute_death_directives("death_user3")
+    second = memory.execute_death_directives("death_user3")
+    assert first == 1
+    assert second == 0
+
+
+def test_execute_death_directives_only_touches_on_death_mode():
+    memory.add_message(
+        "death_user4", "freundin", "user", "sofort-thema", topic="sofort"
+    )
+    memory.record_deletion_directive(
+        "death_user4", "freundin", "sofort", "jetzt loeschen",
+        mode="pending_confirmation",
+    )
+    count = memory.execute_death_directives("death_user4")
+    assert count == 0
+    assert len(memory.recent_messages("death_user4", "freundin", limit=20)) == 1
+
+
+def test_execute_death_directives_returns_zero_when_nothing_pending():
+    assert memory.execute_death_directives("death_user6") == 0
+
+
+def test_execute_death_directives_vacuums_exactly_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(memory, "vacuum", lambda user_id: calls.append(user_id))
+    memory.record_deletion_directive(
+        "death_user5", "freundin", "a", "x", mode="on_death"
+    )
+    memory.record_deletion_directive(
+        "death_user5", "freundin", "b", "y", mode="on_death"
+    )
+    count = memory.execute_death_directives("death_user5")
+    assert count == 2
+    assert calls == ["death_user5"]
