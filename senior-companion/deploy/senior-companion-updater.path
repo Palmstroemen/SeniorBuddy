@@ -1,0 +1,10 @@
+[Unit]
+Description=Beobachtet Update-Anfragen fuer das Senior-Korrespondenz-System
+
+[Path]
+# Pfad anpassen, falls das Repo woanders liegt. Entspricht
+# admin_settings.UPDATE_MARKER_FILE.
+PathChanged=/opt/senior-companion/server/data/.update_requested
+
+[Install]
+WantedBy=multi-user.target

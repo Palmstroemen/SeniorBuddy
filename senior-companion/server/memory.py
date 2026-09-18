@@ -51,11 +51,42 @@ CREATE TABLE IF NOT EXISTS external_requests (
     ts REAL NOT NULL,
     approved_by_user INTEGER DEFAULT 0
 );
+
+-- Technikerin-Zufriedenheitsabfrage: wann gefragt, was geantwortet
+-- wurde (falls die naechste Nachricht rechtzeitig als Antwort erkannt
+-- wurde, siehe record_feedback_reply()).
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    persona TEXT NOT NULL,
+    asked_ts REAL NOT NULL,
+    reply TEXT,
+    reply_ts REAL
+);
 """
+
+# Wird bei jedem get_db()-Aufruf ausgefuehrt - siehe _migrate().
+MIN_SESSION_MINUTES = 1.0
 
 
 def db_path_for(user_id: str) -> Path:
     return DATA_DIR / f"{user_id}.sqlite3"
+
+
+def _migrate(conn: sqlite3.Connection):
+    """Idempotente Spalten-Ergaenzung fuer bereits existierende
+    Datenbankdateien - CREATE TABLE IF NOT EXISTS greift nicht mehr,
+    sobald eine Tabelle schon existiert. Erste Schema-Aenderung des
+    Projekts, daher bewusst simpel gehalten (kein Migrations-Framework
+    fuer eine Handvoll ALTER-Statements)."""
+    for stmt in (
+        "ALTER TABLE messages ADD COLUMN sentiment TEXT",
+        "ALTER TABLE messages ADD COLUMN stance TEXT",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                raise
 
 
 @contextmanager
@@ -63,6 +94,7 @@ def get_db(user_id: str):
     conn = sqlite3.connect(db_path_for(user_id))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     try:
         yield conn
         conn.commit()
@@ -88,6 +120,91 @@ def recent_messages(user_id: str, persona: str, limit: int = 20) -> list[dict]:
     return [dict(r) for r in reversed(rows)]
 
 
+def usage_stats(
+    user_id: str, session_gap_minutes: int = 20, persona: str | None = None
+) -> dict:
+    """Nutzungs-Statistik aus den vorhandenen Nachrichten-Zeitstempeln -
+    braucht keine zusaetzliche Instrumentierung. Eine "Sitzung" endet,
+    sobald zwischen zwei Nutzer-Nachrichten mehr als session_gap_minutes
+    vergehen. Nur role='user'-Zeitstempel zaehlen fuer die Gruppierung -
+    eine Antwort allein soll keine Sitzung verlaengern. persona=None
+    (Default) poolt ueber alle Personas - fuer eine Aufschluesselung pro
+    Persona siehe persona_usage_stats()."""
+    query = "SELECT ts FROM messages WHERE role='user'"
+    params: tuple = ()
+    if persona is not None:
+        query += " AND persona=?"
+        params = (persona,)
+    query += " ORDER BY ts"
+    with get_db(user_id) as db:
+        rows = db.execute(query, params).fetchall()
+    timestamps = [r["ts"] for r in rows]
+
+    if not timestamps:
+        return {
+            "total_sessions": 0,
+            "total_active_minutes": 0,
+            "distinct_active_days": 0,
+            "avg_minutes_per_active_day": 0,
+            "first_message_ts": None,
+            "last_message_ts": None,
+        }
+
+    gap_seconds = session_gap_minutes * 60
+    sessions = [[timestamps[0]]]
+    for ts in timestamps[1:]:
+        if ts - sessions[-1][-1] > gap_seconds:
+            sessions.append([ts])
+        else:
+            sessions[-1].append(ts)
+
+    total_active_minutes = sum(
+        max((s[-1] - s[0]) / 60, MIN_SESSION_MINUTES) for s in sessions
+    )
+    distinct_active_days = len({
+        time.strftime("%Y-%m-%d", time.gmtime(ts)) for ts in timestamps
+    })
+
+    return {
+        "total_sessions": len(sessions),
+        "total_active_minutes": round(total_active_minutes, 1),
+        "distinct_active_days": distinct_active_days,
+        "avg_minutes_per_active_day": round(
+            total_active_minutes / distinct_active_days, 1
+        ) if distinct_active_days else 0,
+        "first_message_ts": timestamps[0],
+        "last_message_ts": timestamps[-1],
+    }
+
+
+def persona_usage_stats(user_id: str, session_gap_minutes: int = 20) -> dict:
+    """Wie oft/wie lange wird welche Persona tatsaechlich genutzt -
+    Grundlage fuer den "Freundeskreis"-Gedanken: manche Personen reden
+    lieber mit dem Professor, andere kaum. message_count zaehlt nur
+    role='user'-Nachrichten (eine Antwort allein ist keine "Ansprache")."""
+    with get_db(user_id) as db:
+        personas = [
+            r["persona"] for r in db.execute(
+                "SELECT DISTINCT persona FROM messages WHERE role='user'"
+            ).fetchall()
+        ]
+        counts = {
+            persona: db.execute(
+                "SELECT COUNT(*) FROM messages WHERE role='user' AND persona=?",
+                (persona,),
+            ).fetchone()[0]
+            for persona in personas
+        }
+
+    return {
+        persona: {
+            "message_count": counts[persona],
+            **usage_stats(user_id, session_gap_minutes, persona=persona),
+        }
+        for persona in personas
+    }
+
+
 def log_external_request(user_id: str, plugin: str, purpose: str, data_sent: dict):
     """Jede Internet-/Plugin-Abfrage MUSS hier durchlaufen, bevor sie passiert.
     Das ist die technische Grundlage der Transparenz-Anzeige."""
@@ -107,6 +224,57 @@ def get_transparency_log(user_id: str, limit: int = 50) -> list[dict]:
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def external_request_stats(user_id: str) -> dict:
+    with get_db(user_id) as db:
+        rows = db.execute(
+            "SELECT plugin, COUNT(*) AS n FROM external_requests GROUP BY plugin"
+        ).fetchall()
+    by_plugin = {r["plugin"]: r["n"] for r in rows}
+    return {"total": sum(by_plugin.values()), "by_plugin": by_plugin}
+
+
+def unclassified_messages(user_id: str, limit: int = 200) -> list[dict]:
+    """Fuer den naechtlichen Sentiment-Job (sentiment_job.py): noch
+    nicht klassifizierte Nutzer-Nachrichten, aelteste zuerst."""
+    with get_db(user_id) as db:
+        rows = db.execute(
+            "SELECT id, content FROM messages WHERE role='user' AND sentiment IS NULL "
+            "ORDER BY id LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_message_classification(
+    user_id: str, message_id: int, sentiment: str, stance: str | None
+):
+    with get_db(user_id) as db:
+        db.execute(
+            "UPDATE messages SET sentiment=?, stance=? WHERE id=?",
+            (sentiment, stance, message_id),
+        )
+
+
+def sentiment_stats(user_id: str) -> dict:
+    with get_db(user_id) as db:
+        sentiment_rows = db.execute(
+            "SELECT sentiment, COUNT(*) AS n FROM messages "
+            "WHERE role='user' AND sentiment IS NOT NULL GROUP BY sentiment"
+        ).fetchall()
+        stance_rows = db.execute(
+            "SELECT stance, COUNT(*) AS n FROM messages "
+            "WHERE role='user' AND stance IS NOT NULL GROUP BY stance"
+        ).fetchall()
+        pending = db.execute(
+            "SELECT COUNT(*) FROM messages WHERE role='user' AND sentiment IS NULL"
+        ).fetchone()[0]
+    return {
+        "sentiment": {r["sentiment"]: r["n"] for r in sentiment_rows},
+        "stance": {r["stance"]: r["n"] for r in stance_rows},
+        "unclassified_pending": pending,
+    }
 
 
 def add_story_fragment(user_id: str, story_id: str, content: str) -> int:
@@ -142,6 +310,16 @@ def list_facts(user_id: str, limit: int = 20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_fact(user_id: str, key: str) -> str | None:
+    """Gezielter Einzel-Lookup des neuesten Werts zu einem Schluessel -
+    z.B. fuer die Anrede-Praeferenz (key=f"anrede:{persona_id}")."""
+    with get_db(user_id) as db:
+        row = db.execute(
+            "SELECT value FROM facts WHERE key=? ORDER BY ts DESC LIMIT 1", (key,)
+        ).fetchone()
+    return row["value"] if row else None
+
+
 def set_story_consent(user_id: str, story_id: str, status: str, note: str = ""):
     """status: 'kids' | 'adults' | 'private' | 'deleted'"""
     with get_db(user_id) as db:
@@ -150,3 +328,67 @@ def set_story_consent(user_id: str, story_id: str, status: str, note: str = ""):
             "WHERE story_id=?",
             (status, note, story_id),
         )
+
+
+def story_consent_stats(user_id: str) -> dict:
+    with get_db(user_id) as db:
+        rows = db.execute(
+            "SELECT consent_status, COUNT(*) AS n FROM story_fragments "
+            "GROUP BY consent_status"
+        ).fetchall()
+    return {r["consent_status"]: r["n"] for r in rows}
+
+
+# --- Technikerin-Zufriedenheitsabfrage -----------------------------------
+
+def record_feedback_asked(user_id: str, persona: str) -> int:
+    with get_db(user_id) as db:
+        cur = db.execute(
+            "INSERT INTO feedback (persona, asked_ts) VALUES (?,?)",
+            (persona, time.time()),
+        )
+        return cur.lastrowid
+
+
+def record_feedback_reply(
+    user_id: str, persona: str, reply: str, max_age_seconds: float = 600
+) -> bool:
+    """Ordnet `reply` der juengsten offenen Nachfrage (reply IS NULL) fuer
+    diese Persona zu, aber nur innerhalb eines kurzen Zeitfensters nach
+    dem Fragen - sonst koennte eine spaetere, thematisch unabhaengige
+    Nachricht faelschlich als Antwort gelten. Liefert False, wenn nichts
+    Offenes/Rechtzeitiges gefunden wurde (reiner No-Op)."""
+    cutoff = time.time() - max_age_seconds
+    with get_db(user_id) as db:
+        row = db.execute(
+            "SELECT id FROM feedback WHERE persona=? AND reply IS NULL "
+            "AND asked_ts >= ? ORDER BY asked_ts DESC LIMIT 1",
+            (persona, cutoff),
+        ).fetchone()
+        if row is None:
+            return False
+        db.execute(
+            "UPDATE feedback SET reply=?, reply_ts=? WHERE id=?",
+            (reply, time.time(), row["id"]),
+        )
+        return True
+
+
+def last_feedback_asked_ts(user_id: str, persona: str) -> float | None:
+    with get_db(user_id) as db:
+        row = db.execute(
+            "SELECT asked_ts FROM feedback WHERE persona=? "
+            "ORDER BY asked_ts DESC LIMIT 1",
+            (persona,),
+        ).fetchone()
+    return row["asked_ts"] if row else None
+
+
+def list_feedback(user_id: str, limit: int = 50) -> list[dict]:
+    with get_db(user_id) as db:
+        rows = db.execute(
+            "SELECT persona, asked_ts, reply, reply_ts FROM feedback "
+            "ORDER BY asked_ts DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]

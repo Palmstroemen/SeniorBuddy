@@ -13,6 +13,7 @@ jede Beruehrung loest sofort einen Push-Alarm ueber ntfy.sh aus.
 import logging
 import os
 import threading
+import time
 
 import httpx
 from inotify_simple import INotify, flags
@@ -22,6 +23,9 @@ from config import DATA_DIR
 log = logging.getLogger("honeypot")
 
 NTFY_TOPIC = os.environ.get("SENIOR_COMPANION_NTFY_TOPIC", "")
+
+_trigger_count = 0
+_last_triggered_at: float | None = None
 
 HONEYPOT_DIR = DATA_DIR / ".honeypot"
 HONEYFILE = HONEYPOT_DIR / "zugangsdaten.txt"
@@ -38,6 +42,9 @@ _WATCH_FLAGS = (
 
 
 def alert(message: str):
+    global _trigger_count, _last_triggered_at
+    _trigger_count += 1
+    _last_triggered_at = time.time()
     log.critical("HONEYPOT AUSGELOEST: %s", message)
     if not NTFY_TOPIC:
         log.warning(
@@ -57,6 +64,16 @@ def alert(message: str):
         )
     except httpx.HTTPError:
         log.exception("Honeypot-Alarm konnte nicht gesendet werden")
+
+
+def trigger_count() -> int:
+    """Wie oft der Honeypot ausgeloest hat - fuer die Statistik-Route
+    in main.py."""
+    return _trigger_count
+
+
+def last_triggered_at() -> float | None:
+    return _last_triggered_at
 
 
 def ensure_honeyfile():

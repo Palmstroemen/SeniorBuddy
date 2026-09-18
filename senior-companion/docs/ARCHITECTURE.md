@@ -44,12 +44,6 @@ nur im Chat-Verlauf existieren.
   umzubauen. Nicht zu verwechseln mit `priority.py` (siehe unten): das
   regelt nur "Senior vs. Ausserordentlicher Nutzer", nicht "mehrere
   Senior:innen untereinander".
-- **Fernwartungs-Backend** (Config remote ändern, Updates einspielen,
-  Statistiken auslesen) – noch nicht gebaut. Ein HTTP-Endpoint, der
-  selbst `git pull` + Neustart ausführt, ist bewusst *nicht* der Plan
-  (Prozess, der sich selbst mitten im Request neu startet – Verlässlich-
-  keits- und Sicherheitsrisiko); eher: Endpoint hinterlegt "Update
-  angefordert", ein separater systemd-Timer führt es aus.
 - **Story-Verdichtung / Formatierung fürs Hinterbliebenen-Erinnerungsbuch**
   – das Datenmodell (`story_fragments`, `consent_status`) existiert
   schon in `memory.py`, aber der Verdichtungs-/Exportprozess selbst
@@ -157,3 +151,122 @@ mitgeliefert – Download-Hinweis in README.md).
 Umschaltbar pro Tablet (`localStorage`, wie die `?user=`-Geräte-Identität),
 nicht pro Installation – die Tablets sind unterschiedlich leistungsstark,
 die Entscheidung ist also wirklich pro Gerät sinnvoll, nicht global.
+
+## Fernwartungs-API (`/admin/*`)
+
+Erste und einzige Stelle im Projekt mit echter Authentifizierung
+(`server/admin_auth.py`, Bearer-Token via `SENIOR_COMPANION_ADMIN_TOKEN`,
+konstant-zeitiger Vergleich wie YulYens_AIs `hmac.compare_digest`).
+Fail-closed: ohne gesetztes Token antwortet die ganze `/admin/*`-API mit
+503, nie offen. Bewusst getrennt vom offenen `/api/*`-Namensraum, weil
+Konfiguration ändern und Updates anstoßen privilegierte Operationen
+sind, anders als der Rest der API (offen fürs Tailnet).
+
+Config-Änderungen (`PERSONA_GENDER`, `NTFY_TOPIC`) wirken sofort (dieselben
+Objekte, die auch `config.py`/`honeypot.py` zur Laufzeit lesen, werden
+direkt mutiert) **und** überstehen einen Neustart – `server/admin_settings.py`
+persistiert sie in `server/data/admin_settings.json`, `main.py`s
+`_apply_persisted_admin_settings()` wendet sie beim Start wieder an,
+bevor der Server Anfragen annimmt.
+
+**"Updates einspielen" läuft nicht im App-Prozess.** `/admin/update`
+schreibt nur eine Marker-Datei (`admin_settings.UPDATE_MARKER_FILE`);
+`deploy/senior-companion-updater.path` (ein systemd-`.path`-Unit)
+bemerkt die Änderung und startet `deploy/run_update.sh` — läuft
+bewusst **ohne** `User=` (also als root), weil `git pull` +
+`systemctl restart` privilegierte Operationen sind, aber nie direkt
+vom Netz erreichbar ist: der FastAPI-Prozess (unprivilegiert, `User=
+senior-companion`) kann ausschließlich die Marker-Datei schreiben,
+sonst nichts. Getrennt getestet: die Git-Pull-Mechanik real gegen ein
+lokales Fake-Origin-Repository (Fast-Forward-Pull funktioniert), das
+komplette Skript real mit einem Fake-`systemctl` (Kontrollfluss,
+Logging, Exit-Code) — nur die echten `systemctl`-Aufrufe selbst sind
+hier mangels root/systemd nicht end-to-end testbar.
+
+Plugin an/aus läuft weiter über das bestehende `/api/plugins/{id}/toggle`
+(bewusst ohne eigenes Auth, Teil der offenen Senior-Oberfläche) — kein
+zusätzlicher Admin-Endpoint nötig, nur dieselbe Route auch als Teil des
+Fernwartungsumfangs verstanden.
+
+### Statistik, Zufriedenheit & Anrede
+
+`/admin/stats` liefert zusätzlich zu den bestehenden Feldern:
+
+- **`usage`** (pro Nutzer:in): Sitzungen/aktive Minuten/aktive Tage,
+  rein aus vorhandenen Nachrichten-Zeitstempeln berechnet
+  (`memory.usage_stats()`), keine zusätzliche Instrumentierung nötig.
+- **`sentiment`**: Stimmung (positiv/neutral/negativ) und
+  Zustimmung/Widerspruch pro Nutzer:in. Bewusst **nicht** per
+  Stichwort-Heuristik (anders als `security.py`/`analysis.py`),
+  sondern per lokalem Modell in einem nächtlichen Hintergrund-Job
+  (`server/sentiment_job.py`, 03:00 Uhr via `scheduler.py`) —
+  genauer bei natürlicher Sprache, dafür ohne Latenz-Einfluss auf den
+  Live-Chat. Läuft als Low-Priority-Task (`priority.py`): eine
+  Senior-Anfrage bricht ihn jederzeit ab, der nächste Lauf macht
+  weiter (jede Nachricht wird einzeln klassifiziert und committet).
+  `unclassified_pending` zeigt ehrlich, wie viel der nächste Lauf noch
+  vor sich hat.
+- **`external_requests`**: Internet-/Plugin-Anfragen pro Nutzer:in,
+  aggregiert aus der bestehenden `external_requests`-Tabelle. Jedes
+  Plugin protokolliert dort selbst (Vertrag aus
+  `plugins/example_weather/plugin.py`s Docstring: "VOR dem
+  eigentlichen Request: log_external_request() aufrufen") — beim
+  Bauen wurde bewusst geprüft, ob `plugins/dispatch.py`s `run_plugin()`
+  das zusätzlich tun sollte, und wieder verworfen: das hätte jeden
+  echten Plugin-Trigger doppelt protokolliert (per Regressionstest
+  `test_run_plugin_does_not_double_log_a_plugin_that_logs_itself`
+  nachgewiesen). `run_plugin()` selbst loggt daher nichts.
+- **`story_consent`**: Verteilung der Geschichten-Freigaben
+  (kids/adults/private/deleted/undecided). Bewusst **ohne**
+  Auswertung von `external_requests.approved_by_user` — die Spalte
+  wird nirgends gesetzt (es gibt keinen Consent-Dialog vor einem
+  Plugin-Aufruf, nur die globale Plugin-Freischaltung), ein
+  immer-0-Feld würde falsche Schlüsse nahelegen.
+- **`problems`**: Guard-Blocks (Eingabe/Kontext getrennt gezählt,
+  `security.py`) und Plugin-Fehler (`plugins/dispatch.py`) — gleiches
+  Zähler-Muster wie `priority.preemption_count()`/
+  `honeypot.trigger_count()`.
+- **`persona_usage`** ("Freundeskreis"): pro Nutzer:in aufgeschlüsselt
+  nach Persona, wie oft (Nachrichten, Sitzungen) und wie lange
+  (aktive Minuten) tatsächlich mit ihr gesprochen wird —
+  `memory.persona_usage_stats()` ruft dafür `memory.usage_stats()`
+  je Persona auf (dort jetzt per `persona`-Parameter filterbar, statt
+  wie bisher immer über alle Personas gepoolt). Gedacht, um sichtbar
+  zu machen, dass unterschiedliche Personen unterschiedliche Personas
+  bevorzugen (z. B. Professor vs. Freundin) — relevant, sobald weitere
+  Personas dazukommen.
+
+**Anrede (Du/Sie):** wird bewusst nicht dem Sprachmodell überlassen,
+sondern explizit gespeichert — kleine lokale Modelle halten Konsistenz
+über eine lange Unterhaltung oder mehrere Sitzungen hinweg nicht
+zuverlässig durch, und ohne diese Änderung stand in keinem
+System-Prompt überhaupt etwas zur Anredeform. Default ist überall
+"Sie" (jetzt auch statisch in jedem `system_prompt`, `config.py`).
+Ein ausdrückliches Du-Angebot (`server/analysis.py`, Regex-Muster wie
+`security.py`) schaltet sofort um — keine Rückfrage, das war eine
+bewusste Abwägung: einfacher Mechanismus, ein falsch erkanntes Angebot
+lässt sich jederzeit über `POST /api/facts/{user_id}`
+(`key=anrede:<persona_id>`) manuell korrigieren. Gespeichert wird das
+in der ohnehin vorhandenen `facts`-Tabelle (`key=f"anrede:{persona_id}"`),
+keine neue Tabelle. Pro Turn wird der aktuell geltende Stand als
+System-Kontext-Nachricht injiziert (`main.py`, gleiches Muster wie
+Fakten/Wissensbasis).
+
+**Technikerin-Zufriedenheitsabfrage:** fragt in eigenen Worten hin und
+wieder nach Zufriedenheit/Verbesserungswünschen (`satisfaction.py`,
+Standard-Intervall 7 Tage, admin-konfigurierbar über
+`POST /admin/config/satisfaction-interval`). Läuft rein im
+Chat-Handler (`main.py`) mit, kein Scheduler-Job nötig — ein
+Server-initiierter Push in eine offene, aber gerade inaktive
+WebSocket-Verbindung wäre ein deutlich größeres Feature gewesen als
+verlangt. Die nächste Nutzer-Nachricht nach der Frage wird als Antwort
+erfasst, aber nur innerhalb eines kurzen Zeitfensters (Standard 10
+Minuten, `memory.record_feedback_reply()`) — sonst könnte eine
+spätere, thematisch unabhängige Nachricht fälschlich als Antwort
+gelten. Aggregiert über `GET /admin/feedback`.
+
+Erste Schema-Änderung des Projekts (`messages` bekommt `sentiment`/
+`stance`-Spalten, `feedback` ist eine neue Tabelle): `memory._migrate()`
+ergänzt fehlende Spalten idempotent per `ALTER TABLE` bei jedem
+`get_db()`-Aufruf, da `CREATE TABLE IF NOT EXISTS` bei bereits
+existierenden Tabellen nichts mehr bewirkt.

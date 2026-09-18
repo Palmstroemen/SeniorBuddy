@@ -15,6 +15,13 @@ from plugins.loader import PluginInfo
 
 log = logging.getLogger("plugins.dispatch")
 
+# Fuer die "Probleme"-Statistik in /admin/stats.
+_plugin_failure_count = 0
+
+
+def plugin_failure_count() -> int:
+    return _plugin_failure_count
+
 
 def find_triggered_plugin(
     plugins: dict[str, PluginInfo], persona_id: str, query: str
@@ -41,10 +48,19 @@ def find_triggered_plugin(
 async def run_plugin(plugin: PluginInfo, query: str, user_id: str) -> str | None:
     """Fuehrt handle() aus und faengt JEDEN Fehler ab - ein kaputtes
     oder nicht erreichbares Plugin darf einen Chat-Turn nie zum
-    Absturz bringen. None bedeutet: kein Kontext zum Injizieren."""
+    Absturz bringen. None bedeutet: kein Kontext zum Injizieren.
+
+    Loggt NICHT selbst nach memory.log_external_request() - das ist
+    Aufgabe des jeweiligen Plugins (siehe
+    plugins/example_weather/plugin.py: 'VOR dem eigentlichen Request:
+    log_external_request() aufrufen'), da nur das Plugin selbst weiss,
+    WAS tatsaechlich nach draussen ging. Ein zusaetzlicher Aufruf hier
+    wuerde jeden Plugin-Trigger doppelt protokollieren."""
+    global _plugin_failure_count
     try:
         instance = plugin.module.Plugin()
         return await instance.handle(query, user_id)
     except Exception:
+        _plugin_failure_count += 1
         log.exception("Plugin '%s' ist bei der Ausfuehrung fehlgeschlagen", plugin.id)
         return None

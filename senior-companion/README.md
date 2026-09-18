@@ -92,6 +92,87 @@ senior-companion`), es wird aber nichts nach außen geschickt.
 aus – `server/data/.honeypot/` sollte deshalb von jedem Backup-Job
 ausgeschlossen werden.
 
+## Fernwartungs-API (`/admin/*`)
+
+Einzige Stelle im Projekt mit echter Authentifizierung – der Rest der
+API ist bewusst offen für Geräte im selben Tailnet (siehe
+`docs/ARCHITECTURE.md`), aber Konfiguration ändern und ein Update
+anstoßen sind privilegierte Operationen.
+
+```bash
+# Eigenes, starkes Token erzeugen:
+openssl rand -hex 32
+```
+
+Als `SENIOR_COMPANION_ADMIN_TOKEN` setzen (`sudo systemctl edit
+senior-companion` → `Environment=SENIOR_COMPANION_ADMIN_TOKEN=<wert>`).
+Ohne gesetztes Token antwortet die gesamte `/admin/*`-API mit 503 –
+nie offen.
+
+```bash
+TOKEN="<dein-token>"
+BASE="https://senior-pc.<tailnet>.ts.net"   # oder http://127.0.0.1:8000 lokal
+
+# Geschlechts-Variante einer Persona aendern (wirkt sofort, uebersteht Neustart)
+curl -X POST "$BASE/admin/config/persona-gender/freundin" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"gender": "weiblich"}'
+
+# Honeypot-Alarm-Topic aendern
+curl -X POST "$BASE/admin/config/ntfy-topic" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"topic": "neues-topic"}'
+
+# Statistiken (Nachrichten/Nutzung/Stimmung/Internet-Anfragen/
+# Datenfreigaben/Probleme/Persona-Nutzung ("Freundeskreis") pro
+# Nutzer:in, Plugin-Status, Praeemptionen, Honeypot-Ausloesungen, Uptime)
+curl "$BASE/admin/stats" -H "Authorization: Bearer $TOKEN"
+
+# Zufriedenheits-Antworten der Technikerin-Nachfrage (neueste zuerst)
+curl "$BASE/admin/feedback" -H "Authorization: Bearer $TOKEN"
+
+# Wie oft die Technikerin nach Zufriedenheit fragt (Tage, Standard: 7)
+curl -X POST "$BASE/admin/config/satisfaction-interval" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"days": 7}'
+
+# Update anstossen (siehe unten, was dabei passiert) + Status abfragen
+curl -X POST "$BASE/admin/update" -H "Authorization: Bearer $TOKEN"
+curl "$BASE/admin/update/status" -H "Authorization: Bearer $TOKEN"
+```
+
+**Statistik & Zufriedenheit:** `sentiment` in `/admin/stats` kommt aus
+einem nächtlichen Hintergrund-Job (lokales Modell, kein Live-Latenz-
+Einfluss, siehe `docs/ARCHITECTURE.md`), nicht aus einer Live-Analyse –
+`unclassified_pending` zeigt, wie viel der nächste Lauf noch vor sich
+hat. Die Technikerin fragt von sich aus hin und wieder nach
+Zufriedenheit/Wünschen; die nächste Nachricht danach wird (innerhalb
+weniger Minuten) als Antwort erfasst und landet in `/admin/feedback`.
+Anrede (Du/Sie) startet immer bei "Sie" und schaltet bei einem
+ausdrücklichen Du-Angebot automatisch um – bei einer Fehlerkennung per
+`POST /api/facts/{user_id}` (`key=anrede:<persona_id>`, `value=sie`)
+manuell korrigierbar.
+
+**Plugin an/aus** läuft weiter über das bestehende, absichtlich
+unauthentifizierte `/api/plugins/{id}/toggle` (Teil der offenen
+Senior-Oberfläche) – genauso über das Tailnet fernsteuerbar, kein
+eigener Endpoint nötig.
+
+**"Updates einspielen" läuft nicht im App-Prozess selbst.** Ein
+FastAPI-Prozess, der sich mitten im Request neu startet, ist ein
+Verlässlichkeits- und Sicherheitsrisiko. `/admin/update` schreibt
+stattdessen nur eine Marker-Datei; ein separates, privilegiert
+laufendes systemd-`.path`-Unit bemerkt die Änderung und führt den
+eigentlichen `git pull` + Neustart aus (`deploy/run_update.sh`) – der
+netz-erreichbare Prozess bekommt dadurch nie Rechte für `git pull`
+oder `systemctl restart`, nur die Fähigkeit, eine Datei zu schreiben.
+Einrichtung:
+
+```bash
+sudo cp deploy/senior-companion-updater.{path,service} /etc/systemd/system/
+sudo systemctl enable --now senior-companion-updater.path
+```
+
 ## Mehrere Personen (ein gemeinsamer Server, mehrere Tablets)
 
 Jedes Tablet bekommt beim Einrichten eine eigene URL mit

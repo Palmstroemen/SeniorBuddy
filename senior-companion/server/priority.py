@@ -12,14 +12,16 @@ _active_senior_streams = 0
 _low_priority_tasks: set = set()
 _idle_event = asyncio.Event()
 _idle_event.set()
+_preemption_count = 0
 
 
 def senior_stream_started():
-    global _active_senior_streams
+    global _active_senior_streams, _preemption_count
     _active_senior_streams += 1
     _idle_event.clear()
     for task in list(_low_priority_tasks):
         task.cancel()
+        _preemption_count += 1
 
 
 def senior_stream_finished():
@@ -43,10 +45,18 @@ def register_low_priority_task(task):
     Senior-Stream gestartet ist - schliesst die Race Condition, die eine
     unregistrierte Aufgabe sonst fuer ihre GESAMTE Laufzeit ungeschuetzt
     liesse."""
+    global _preemption_count
     _low_priority_tasks.add(task)
     if senior_stream_active():
         task.cancel()
+        _preemption_count += 1
 
 
 def unregister_low_priority_task(task):
     _low_priority_tasks.discard(task)
+
+
+def preemption_count() -> int:
+    """Wie oft eine Low-Priority-Generierung wegen einer Senior-Anfrage
+    abgebrochen wurde - fuer die Statistik-Route in main.py."""
+    return _preemption_count

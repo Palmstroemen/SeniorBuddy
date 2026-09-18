@@ -9,8 +9,19 @@ eigenen Plugin-Klasse - kein echtes httpx noetig.
 """
 from types import SimpleNamespace
 
+import pytest
+
+import memory
+import plugins.dispatch as dispatch
 from plugins.dispatch import find_triggered_plugin, run_plugin
 from plugins.loader import PluginInfo
+
+
+@pytest.fixture(autouse=True)
+def _reset_plugin_failure_count():
+    dispatch._plugin_failure_count = 0
+    yield
+    dispatch._plugin_failure_count = 0
 
 
 def _plugin(id="weather", enabled=True, allowed_personas=None, trigger_keywords=None,
@@ -80,3 +91,36 @@ async def test_run_plugin_returns_none_when_handle_raises():
     plugin = _plugin(module=module)
     result = await run_plugin(plugin, "Wie ist das Wetter?", "testnutzer_1")
     assert result is None
+
+
+# --- Fehler-Zaehler (fuer die "Probleme"-Statistik) ----------------------
+
+async def test_plugin_failure_count_increments_on_exception():
+    assert dispatch.plugin_failure_count() == 0
+    module = SimpleNamespace(Plugin=_StubHandleFails)
+    plugin = _plugin(module=module)
+    await run_plugin(plugin, "Wie ist das Wetter?", "failtest_user")
+    assert dispatch.plugin_failure_count() == 1
+
+
+async def test_plugin_failure_count_not_incremented_on_success():
+    module = SimpleNamespace(Plugin=_StubHandleOk)
+    plugin = _plugin(module=module)
+    await run_plugin(plugin, "Wie ist das Wetter?", "successtest_user")
+    assert dispatch.plugin_failure_count() == 0
+
+
+async def test_run_plugin_does_not_double_log_a_plugin_that_logs_itself(httpx_mock):
+    """Regression: der echte Wetter-Plugin ruft memory.log_external_request()
+    bereits selbst auf (siehe plugins/example_weather/plugin.py und dessen
+    eigener Test test_plugin_weather.py::test_handle_logs_transparency_
+    before_the_request). Ein zusaetzlicher Logging-Aufruf in run_plugin()
+    selbst wuerde jeden echten Plugin-Trigger doppelt protokollieren."""
+    from plugins.loader import discover_plugins
+
+    httpx_mock.add_response(
+        json={"current": {"temperature_2m": 12.0, "precipitation": 0}}
+    )
+    weather = discover_plugins()["weather"]
+    await run_plugin(weather, "Wie ist das Wetter?", "doublelog_user")
+    assert len(memory.get_transparency_log("doublelog_user")) == 1

@@ -12,6 +12,15 @@ import pytest
 import honeypot
 
 
+@pytest.fixture(autouse=True)
+def _reset_honeypot_counters():
+    honeypot._trigger_count = 0
+    honeypot._last_triggered_at = None
+    yield
+    honeypot._trigger_count = 0
+    honeypot._last_triggered_at = None
+
+
 def test_ensure_honeyfile_creates_dir_and_file():
     assert not honeypot.HONEYFILE.exists()
     honeypot.ensure_honeyfile()
@@ -76,3 +85,19 @@ def test_watching_a_real_file_access_triggers_alert(monkeypatch):
         stop_event.set()
         thread.join(timeout=3)
         assert not thread.is_alive()
+
+
+def test_trigger_count_and_last_triggered_at_track_real_alerts(monkeypatch):
+    monkeypatch.setattr(honeypot, "NTFY_TOPIC", "")  # kein echter Netzaufruf noetig
+
+    assert honeypot.trigger_count() == 0
+    assert honeypot.last_triggered_at() is None
+
+    honeypot.alert("erster Alarm")
+    assert honeypot.trigger_count() == 1
+    first_ts = honeypot.last_triggered_at()
+    assert first_ts is not None
+
+    honeypot.alert("zweiter Alarm")
+    assert honeypot.trigger_count() == 2
+    assert honeypot.last_triggered_at() >= first_ts

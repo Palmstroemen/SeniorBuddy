@@ -180,7 +180,7 @@ def test_plugin_context_blocked_by_guard_does_not_crash_the_turn(monkeypatch):
                 pass
 
     injected = [m for m in captured["messages"] if m["role"] == "system"]
-    assert injected == []
+    assert not any("Rechercheergebnis" in m["content"] for m in injected)
 
 
 # --- Personen-Fakten + Wissensbasis (RAG) --------------------------------
@@ -301,6 +301,133 @@ def test_knowledge_context_blocked_by_guard_does_not_crash_the_turn(monkeypatch)
 
     injected = [m for m in captured["messages"] if m["role"] == "system"]
     assert not any("Wissensbasis" in m["content"] for m in injected)
+
+
+# --- Anrede (Du/Sie) ------------------------------------------------------
+
+def test_default_anrede_is_sie_without_a_fact(monkeypatch):
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Wie war Ihr Tag?"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/chat/anrede_user1/freundin") as ws:
+            ws.send_text("Wie geht es dir?")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert any("sie" in m["content"].lower() and "anrede" in m["content"].lower() for m in injected)
+    assert memory.get_fact("anrede_user1", "anrede:freundin") is None
+
+
+def test_du_offer_sets_fact_and_is_used_from_next_turn(monkeypatch):
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Alles klar!"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/chat/anrede_user2/freundin") as ws:
+            ws.send_text("Wir koennen uns ruhig duzen.")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+            assert memory.get_fact("anrede_user2", "anrede:freundin") == "du"
+
+            ws.send_text("Na, wie schauts aus?")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert any("du" in m["content"].lower() and "anrede" in m["content"].lower() for m in injected)
+
+
+def test_anrede_fact_is_per_persona():
+    memory.add_fact("anrede_user3", "anrede:freundin", "du")
+    assert memory.get_fact("anrede_user3", "anrede:reporter") is None
+
+
+# --- Technikerin: Zufriedenheits-Checkin ---------------------------------
+
+def test_technikerin_checkin_injected_when_due(monkeypatch):
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Alles klar!"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/chat/checkin_user1/technikerin") as ws:
+            ws.send_text("Hallo!")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert any("Zufriedenheit" in m["content"] or "wuenschen" in m["content"] for m in injected)
+    assert memory.last_feedback_asked_ts("checkin_user1", "technikerin") is not None
+
+
+def test_technikerin_checkin_not_injected_when_recently_asked(monkeypatch):
+    memory.record_feedback_asked("checkin_user2", "technikerin")
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Alles klar!"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/chat/checkin_user2/technikerin") as ws:
+            ws.send_text("Hallo!")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert not any("wuenschen" in m["content"] for m in injected)
+
+
+def test_technikerin_reply_is_captured_as_feedback(monkeypatch):
+    memory.record_feedback_asked("checkin_user3", "technikerin")
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield "Danke fuer die Rueckmeldung!"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/chat/checkin_user3/technikerin") as ws:
+            ws.send_text("Mir gefaellt das sehr gut, weiter so!")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    rows = memory.list_feedback("checkin_user3")
+    assert rows[0]["reply"] == "Mir gefaellt das sehr gut, weiter so!"
+
+
+def test_non_technikerin_replies_are_not_captured_as_feedback(monkeypatch):
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield "Servus!"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/chat/checkin_user4/freundin") as ws:
+            ws.send_text("Hallo!")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    assert memory.list_feedback("checkin_user4") == []
 
 
 # --- /ws/raw: Ausserordentlicher Nutzer, niedrige Prioritaet ------------

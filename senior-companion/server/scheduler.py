@@ -14,6 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 import logging
 
 import llm_client
+import sentiment_job
 from config import PERSONAS
 
 log = logging.getLogger("scheduler")
@@ -23,6 +24,12 @@ scheduler = AsyncIOScheduler()
 # Nutzer:in ein eigener, konfigurierbarer Termin dazu.
 DAILY_VISIT_HOUR = 16
 DAILY_VISIT_MINUTE = 0
+
+# Nachts, wenn niemand chattet - unschaedlich fuer die Senior-Prioritaet
+# (priority.py), da der Job sich sofort selbst abbricht, falls doch
+# jemand gerade spricht.
+SENTIMENT_JOB_HOUR = 3
+SENTIMENT_JOB_MINUTE = 0
 
 
 async def prewarm_professor():
@@ -60,6 +67,12 @@ def setup_scheduler():
         prewarm_professor,
         CronTrigger(hour=hour, minute=minute),
         id="prewarm_professor",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        sentiment_job.classify_pending_messages,
+        CronTrigger(hour=SENTIMENT_JOB_HOUR, minute=SENTIMENT_JOB_MINUTE),
+        id="classify_sentiment",
         replace_existing=True,
     )
     if not scheduler.running:

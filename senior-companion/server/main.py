@@ -10,22 +10,28 @@ Modelle sind gepullt (siehe README.md).
 import asyncio
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import Depends, FastAPI, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import admin_auth
+import admin_settings
+import analysis
+import config
 import honeypot
 import knowledge
 import llm_client
 import memory
 import priority
+import satisfaction
 import security
 import speech_client
-from config import PERSONAS, FALLBACK_PERSONA, KNOWLEDGE_PERSONAS
-from plugins.dispatch import find_triggered_plugin, run_plugin
+from config import PERSONAS, PERSONA_GENDER, FALLBACK_PERSONA, KNOWLEDGE_PERSONAS
+from plugins.dispatch import find_triggered_plugin, run_plugin, plugin_failure_count
 from plugins.loader import discover_plugins
 import scheduler as scheduler_module
 
@@ -34,13 +40,30 @@ log = logging.getLogger("main")
 
 plugins = discover_plugins()
 guard = security.BasicGuard()
+_started_at = time.time()
 
 # System-Prompt fuer /ws/raw - bewusst ohne Persona, siehe dort.
 RAW_SYSTEM_PROMPT = "Du bist ein hilfreicher Assistent."
 
 
+def _apply_persisted_admin_settings():
+    """Von lifespan() beim Start aufgerufen: persistierte Admin-
+    Aenderungen (server/data/admin_settings.json) ueberschreiben die
+    Standardwerte aus config.py, falls vorhanden - sonst waere eine per
+    /admin/config/* geaenderte Einstellung nach einem Neustart wieder
+    weg."""
+    settings = admin_settings.load()
+    if "persona_gender" in settings:
+        PERSONA_GENDER.update(settings["persona_gender"])
+    if "ntfy_topic" in settings:
+        honeypot.NTFY_TOPIC = settings["ntfy_topic"]
+    if "satisfaction_interval_days" in settings:
+        satisfaction.CHECKIN_INTERVAL_DAYS = settings["satisfaction_interval_days"]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _apply_persisted_admin_settings()
     scheduler_module.setup_scheduler()
     honeypot_stop = threading.Event()
     honeypot.start_watching(honeypot_stop)
@@ -199,6 +222,12 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
 
             memory.add_message(user_id, persona.id, "user", user_text)
 
+            if persona.id == "technikerin":
+                # Reiner Seiteneffekt: ordnet diese Nachricht einer
+                # offenen Zufriedenheits-Nachfrage zu, falls es eine
+                # gibt (No-Op sonst) - aendert den Gespraechsfluss nicht.
+                memory.record_feedback_reply(user_id, persona.id, user_text)
+
             history = memory.recent_messages(user_id, persona.id, limit=20)
             chat_messages = [
                 {"role": m["role"], "content": m["content"]} for m in history
@@ -243,6 +272,33 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
                             "Wissens-Kontext '%s' blockiert (Regel=%s)",
                             match.title, context_check["rule"],
                         )
+
+            # Anrede (Du/Sie): ein ausdrueckliches Angebot schaltet
+            # sofort um (siehe analysis.py), sonst bleibt "sie" der
+            # Default. Wirkt fuer jede Persona, nicht nur Technikerin -
+            # siehe config.py fuer den statischen Sie-Standard im
+            # system_prompt, der das hier ueberschreibt.
+            anrede_key = f"anrede:{persona.id}"
+            if (
+                analysis.detect_du_offer(user_text)
+                and memory.get_fact(user_id, anrede_key) != "du"
+            ):
+                memory.add_fact(user_id, anrede_key, "du", source_persona=persona.id)
+            anrede = memory.get_fact(user_id, anrede_key) or "sie"
+            chat_messages.append({
+                "role": "system",
+                "content": (
+                    f"Anrede-Form fuer diese Person bei dieser Persona: {anrede}. "
+                    f"Sprich konsequent in der "
+                    f"{'Du' if anrede == 'du' else 'Sie'}-Form."
+                ),
+            })
+
+            if persona.id == "technikerin" and satisfaction.is_due(user_id, persona.id):
+                chat_messages.append({
+                    "role": "system", "content": satisfaction.CHECKIN_PROMPT,
+                })
+                memory.record_feedback_asked(user_id, persona.id)
 
             full_response = ""
             priority.senior_stream_started()
@@ -346,6 +402,146 @@ async def _honeypot_route(request: Request):
         f"von {request.client.host if request.client else '?'}"
     )
     raise HTTPException(404, "Not Found")
+
+
+# ---------------------------------------------------------------------
+# Fernwartungs-API (/admin/*) - einzige Stelle mit echter
+# Authentifizierung (admin_auth.require_admin), bewusst getrennt vom
+# offenen /api/*-Namensraum. "Updates einspielen" fuehrt NICHT dieser
+# Prozess selbst aus (Verlaesslichkeits-/Sicherheitsrisiko, ein
+# Prozess, der sich selbst neu startet) - der Endpoint schreibt nur
+# eine Marker-Datei, ein separates, privilegiertes systemd-.path-Unit
+# fuehrt den eigentlichen Update-Lauf aus (deploy/run_update.sh).
+# Plugin an/aus gehoert funktional auch zum Fernwartungsumfang, braucht
+# aber keinen neuen Endpoint - /api/plugins/{id}/toggle ist schon da.
+# ---------------------------------------------------------------------
+
+class PersonaGenderUpdate(BaseModel):
+    gender: str
+
+
+@app.get("/admin/config/persona-gender", dependencies=[Depends(admin_auth.require_admin)])
+def get_persona_gender():
+    return PERSONA_GENDER
+
+
+@app.post(
+    "/admin/config/persona-gender/{persona_id}",
+    dependencies=[Depends(admin_auth.require_admin)],
+)
+def set_persona_gender(persona_id: str, body: PersonaGenderUpdate):
+    if persona_id not in PERSONAS:
+        raise HTTPException(404, "Persona nicht gefunden")
+    if body.gender not in {"neutral", "weiblich", "maennlich"}:
+        raise HTTPException(400, "Ungueltiges Geschlecht")
+    PERSONA_GENDER[persona_id] = body.gender  # sofort wirksam - PERSONAS liest denselben dict
+    admin_settings.update("persona_gender", PERSONA_GENDER)
+    return {"persona_id": persona_id, "gender": body.gender}
+
+
+class NtfyTopicUpdate(BaseModel):
+    topic: str
+
+
+@app.post("/admin/config/ntfy-topic", dependencies=[Depends(admin_auth.require_admin)])
+def set_ntfy_topic(body: NtfyTopicUpdate):
+    honeypot.NTFY_TOPIC = body.topic
+    admin_settings.update("ntfy_topic", body.topic)
+    return {"topic": body.topic}
+
+
+@app.get("/admin/stats", dependencies=[Depends(admin_auth.require_admin)])
+def admin_stats():
+    per_user = {}
+    usage = {}
+    sentiment = {}
+    external_requests = {}
+    story_consent = {}
+    persona_usage = {}
+    for db_path in sorted(config.DATA_DIR.glob("*.sqlite3")):
+        user_id = db_path.stem
+        with memory.get_db(user_id) as db:
+            count = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        per_user[user_id] = count
+        usage[user_id] = memory.usage_stats(user_id)
+        sentiment[user_id] = memory.sentiment_stats(user_id)
+        external_requests[user_id] = memory.external_request_stats(user_id)
+        story_consent[user_id] = memory.story_consent_stats(user_id)
+        persona_usage[user_id] = memory.persona_usage_stats(user_id)
+
+    return {
+        "uptime_seconds": time.time() - _started_at,
+        "users": per_user,
+        "total_messages": sum(per_user.values()),
+        "plugins_enabled": {pid: p.enabled for pid, p in plugins.items()},
+        "priority": {
+            "senior_stream_active": priority.senior_stream_active(),
+            "preemptions": priority.preemption_count(),
+        },
+        "honeypot": {
+            "trigger_count": honeypot.trigger_count(),
+            "last_triggered_at": honeypot.last_triggered_at(),
+        },
+        # "Wie oft, wieviele Minuten am Tag" pro Nutzer:in.
+        "usage": usage,
+        # "Freundeskreis": wie oft/wie lange wird welche Persona
+        # tatsaechlich genutzt - siehe memory.persona_usage_stats().
+        "persona_usage": persona_usage,
+        # Best-Effort-Signal aus dem naechtlichen LLM-Klassifikations-
+        # Job (sentiment_job.py), nicht live - unclassified_pending
+        # zeigt, wie viel der naechste Lauf noch vor sich hat.
+        "sentiment": sentiment,
+        "external_requests": external_requests,
+        # Bewusst OHNE approved_by_user-Auswertung: die Spalte wird
+        # nirgends gesetzt (kein Consent-Dialog existiert), ein
+        # immer-0-Feld wuerde falsche Schluesse nahelegen.
+        "story_consent": story_consent,
+        "problems": {
+            "guard_input_blocks": security.input_block_count(),
+            "guard_context_blocks": security.context_block_count(),
+            "plugin_failures": plugin_failure_count(),
+        },
+    }
+
+
+class SatisfactionIntervalUpdate(BaseModel):
+    days: int
+
+
+@app.post(
+    "/admin/config/satisfaction-interval",
+    dependencies=[Depends(admin_auth.require_admin)],
+)
+def set_satisfaction_interval(body: SatisfactionIntervalUpdate):
+    if body.days < 1:
+        raise HTTPException(400, "Muss mindestens 1 Tag sein")
+    satisfaction.CHECKIN_INTERVAL_DAYS = body.days
+    admin_settings.update("satisfaction_interval_days", body.days)
+    return {"days": body.days}
+
+
+@app.get("/admin/feedback", dependencies=[Depends(admin_auth.require_admin)])
+def admin_feedback(limit: int = 50):
+    rows = []
+    for db_path in config.DATA_DIR.glob("*.sqlite3"):
+        user_id = db_path.stem
+        for row in memory.list_feedback(user_id, limit=limit):
+            rows.append({"user_id": user_id, **row})
+    rows.sort(key=lambda r: r["asked_ts"], reverse=True)
+    return rows[:limit]
+
+
+@app.post("/admin/update", dependencies=[Depends(admin_auth.require_admin)])
+def request_update():
+    admin_settings.UPDATE_MARKER_FILE.write_text(str(time.time()), encoding="utf-8")
+    return {"status": "angefordert"}
+
+
+@app.get("/admin/update/status", dependencies=[Depends(admin_auth.require_admin)])
+def update_status():
+    if not admin_settings.UPDATE_LOG_FILE.exists():
+        return {"log": None}
+    return {"log": admin_settings.UPDATE_LOG_FILE.read_text(encoding="utf-8")[-2000:]}
 
 
 # ---------------------------------------------------------------------

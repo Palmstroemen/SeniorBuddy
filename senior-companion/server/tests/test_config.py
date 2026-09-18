@@ -43,3 +43,13 @@ def test_neutral_reuses_the_maennlich_voice():
     vorzutaeuschen."""
     for persona in config.PERSONAS.values():
         assert persona.variants["neutral"].voice_id == persona.variants["maennlich"].voice_id
+
+
+def test_every_variant_defaults_to_sie_form():
+    """Ohne diesen Hinweis wuerde das Sprachmodell die Anrede-Form
+    selbst improvisieren - siehe main.py, das den tatsaechlichen
+    Anrede-Stand (facts-Tabelle) zusaetzlich pro Turn injiziert. Dieser
+    Satz ist nur das statische Sicherheitsnetz/der Standard."""
+    for persona in config.PERSONAS.values():
+        for variant in persona.variants.values():
+            assert "Sie-Form" in variant.system_prompt

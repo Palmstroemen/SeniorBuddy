@@ -1,0 +1,15 @@
+[Unit]
+Description=Fuehrt ein per /admin/update angefordertes Update aus (git pull + Neustart)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/senior-companion
+ExecStart=/opt/senior-companion/deploy/run_update.sh
+# Bewusst OHNE User= (laeuft als root): git pull + systemctl restart
+# sind privilegierte Operationen. Das ist hier sicherheitstechnisch
+# unproblematisch, weil dieser Dienst NIE direkt vom Netz erreichbar
+# ist - er wird ausschliesslich lokal durch senior-companion-updater.path
+# ausgeloest, wenn sich die Marker-Datei aendert. Der Netz-erreichbare
+# FastAPI-Prozess (server/main.py, User=senior-companion, siehe
+# senior-companion.service) hat selbst KEINE dieser Rechte - er kann
+# ausschliesslich die Marker-Datei schreiben, sonst nichts.

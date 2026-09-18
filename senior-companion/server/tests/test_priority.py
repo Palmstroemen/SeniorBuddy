@@ -19,10 +19,12 @@ def _reset_priority_state():
     priority._active_senior_streams = 0
     priority._low_priority_tasks.clear()
     priority._idle_event.set()
+    priority._preemption_count = 0
     yield
     priority._active_senior_streams = 0
     priority._low_priority_tasks.clear()
     priority._idle_event.set()
+    priority._preemption_count = 0
 
 
 def test_senior_stream_active_toggles_correctly():
@@ -107,3 +109,28 @@ def test_unregister_removes_task_from_future_cancellation():
     priority._low_priority_tasks.add(fake_task)
     priority.unregister_low_priority_task(fake_task)
     assert fake_task not in priority._low_priority_tasks
+
+
+async def test_preemption_count_tracks_actual_cancellations():
+    assert priority.preemption_count() == 0
+
+    async def low_priority_work():
+        await asyncio.sleep(5)
+
+    task_a = asyncio.create_task(low_priority_work())
+    task_b = asyncio.create_task(low_priority_work())
+    priority.register_low_priority_task(task_a)
+    priority.register_low_priority_task(task_b)
+
+    priority.senior_stream_started()
+
+    for task in (task_a, task_b):
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert priority.preemption_count() == 2
+
+
+def test_preemption_count_not_incremented_when_nothing_to_cancel():
+    priority.senior_stream_started()
+    assert priority.preemption_count() == 0

@@ -38,6 +38,14 @@ async def test_setup_scheduler_registers_job_without_error():
     scheduler.shutdown_scheduler()
 
 
+async def test_setup_scheduler_registers_sentiment_classification_job():
+    scheduler.scheduler = scheduler.AsyncIOScheduler()
+    scheduler.setup_scheduler()
+    job = scheduler.scheduler.get_job("classify_sentiment")
+    assert job is not None
+    scheduler.shutdown_scheduler()
+
+
 async def test_setup_scheduler_is_idempotent():
     """Regression: ein zweiter Aufruf (z.B. durch mehrere App-Starts in
     Tests) darf nicht mit SchedulerAlreadyRunningError crashen."""

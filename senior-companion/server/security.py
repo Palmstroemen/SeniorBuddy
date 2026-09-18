@@ -111,9 +111,32 @@ def _check(text: str, rules: list[Rule]) -> GuardResult:
     return GuardResult(ok=True, rule=None, detail=None)
 
 
+# Zaehler fuer die "Probleme"-Statistik in /admin/stats - getrennt nach
+# Eingabe (Nutzer:in) und Kontext (Plugin-/Wissensbasis-Text), damit
+# sichtbar wird, WELCHE Angriffsflaeche tatsaechlich ausgeloest wird.
+_input_block_count = 0
+_context_block_count = 0
+
+
 class BasicGuard:
     def check_input(self, text: str) -> GuardResult:
-        return _check(text, INPUT_RULES)
+        global _input_block_count
+        result = _check(text, INPUT_RULES)
+        if not result["ok"]:
+            _input_block_count += 1
+        return result
 
     def check_context(self, text: str) -> GuardResult:
-        return _check(text, CONTEXT_RULES)
+        global _context_block_count
+        result = _check(text, CONTEXT_RULES)
+        if not result["ok"]:
+            _context_block_count += 1
+        return result
+
+
+def input_block_count() -> int:
+    return _input_block_count
+
+
+def context_block_count() -> int:
+    return _context_block_count
