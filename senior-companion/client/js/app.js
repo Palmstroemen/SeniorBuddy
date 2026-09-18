@@ -22,15 +22,73 @@ function loadSetting(key, fallback) {
 }
 let sttMode = loadSetting("senior_companion_stt_mode", "device");
 let ttsMode = loadSetting("senior_companion_tts_mode", "device");
+// "avatar" (Standard) zeigt die Präsenz-Oberfläche, "text" das
+// bisherige Chat-Log. "stick"/"flat" sind die zwei einfachen
+// Avatar-Stile - beide bewusst simpel, siehe lucky-wishing-pebble.md.
+let uiMode = loadSetting("senior_companion_ui_mode", "avatar");
+let avatarStyle = loadSetting("senior_companion_avatar_style", "stick");
 
 let currentPersona = null;
 let socket = null;
+const PERSONA_NAMES = {};
 
 const chatArea = document.getElementById("chatArea");
+const avatarStage = document.getElementById("avatarStage");
 const personaTabs = document.getElementById("personaTabs");
 const textInput = document.getElementById("textInput");
 const sendBtn = document.getElementById("sendBtn");
 const micBtn = document.getElementById("micBtn");
+
+// --- Avatare: bewusst einfache Vektorgrafik, kein realistischer, ------
+// lippensynchroner Avatar. fill/stroke kommen per CSS-Klasse
+// (.avatar-shape.stick / .flat), die SVG-Formen selbst setzen keine
+// Farbe, damit ein Stilwechsel ohne Neuaufbau moeglich ist.
+
+function avatarSvg(personaId, style) {
+  const body = style === "flat"
+    ? `<circle cx="50" cy="26" r="15"/>
+       <path d="M30,96 Q28,42 50,40 Q72,42 70,96 Z"/>`
+    : `<circle cx="50" cy="26" r="15"/>
+       <line x1="50" y1="41" x2="50" y2="72"/>
+       <line x1="50" y1="52" x2="30" y2="68"/>
+       <line x1="50" y1="52" x2="70" y2="68"/>
+       <line x1="50" y1="72" x2="34" y2="96"/>
+       <line x1="50" y1="72" x2="66" y2="96"/>`;
+  return `<svg class="avatar-shape ${style}" data-persona="${personaId}" viewBox="0 0 100 100">${body}</svg>`;
+}
+
+function refreshAvatarStyles() {
+  document.querySelectorAll(".avatar-icon-bg").forEach((bg) => {
+    bg.innerHTML = avatarSvg(bg.dataset.persona, avatarStyle);
+  });
+  const stageBg = document.getElementById("stageAvatarBg");
+  if (stageBg) stageBg.innerHTML = avatarSvg(stageBg.dataset.persona, avatarStyle);
+}
+
+// --- Avatar-Buehne: zeigt, wer gerade antwortet/spricht ---------------
+
+function stageIdle() {
+  avatarStage.innerHTML = '<p class="stage-hint">Tippe unten etwas, oder halte den Mikrofon-Knopf gedrückt, um zu sprechen.</p>';
+}
+
+function stageShow(personaId, speaking) {
+  let bg = document.getElementById("stageAvatarBg");
+  if (!bg || bg.dataset.persona !== personaId) {
+    avatarStage.innerHTML = `
+      <span class="avatar-shape-bg avatar-full-bg" id="stageAvatarBg" data-persona="${personaId}">
+        ${avatarSvg(personaId, avatarStyle)}
+      </span>
+      <span class="avatar-full-name">${PERSONA_NAMES[personaId] || ""}</span>
+    `;
+    bg = document.getElementById("stageAvatarBg");
+  }
+  bg.classList.toggle("speaking", !!speaking);
+}
+
+function applyUiMode() {
+  chatArea.hidden = uiMode !== "text";
+  avatarStage.hidden = uiMode !== "avatar";
+}
 
 // --- Personas laden und Tabs aufbauen -------------------------------
 
@@ -39,14 +97,22 @@ async function loadPersonas() {
   const personas = await res.json();
   personaTabs.innerHTML = "";
   personas.forEach((p, i) => {
+    PERSONA_NAMES[p.id] = p.display_name;
     const btn = document.createElement("button");
     btn.className = "persona-tab";
     btn.dataset.persona = p.id;
-    btn.textContent = p.display_name;
+    btn.innerHTML = `
+      <span class="avatar-shape-bg avatar-icon-bg" data-persona="${p.id}">
+        ${avatarSvg(p.id, avatarStyle)}
+      </span>
+      <span class="tab-label">${p.display_name}</span>
+    `;
     btn.addEventListener("click", () => switchPersona(p.id));
     personaTabs.appendChild(btn);
     if (i === 0) switchPersona(p.id);
   });
+  stageIdle();
+  applyUiMode();
 }
 
 function switchPersona(personaId) {
@@ -55,6 +121,7 @@ function switchPersona(personaId) {
     el.classList.toggle("active", el.dataset.persona === personaId);
   });
   chatArea.innerHTML = "";
+  stageIdle();
   connect(personaId);
 }
 
@@ -75,12 +142,14 @@ function connect(personaId) {
       }
       assistantBubble.textContent += msg.content;
       chatArea.scrollTop = chatArea.scrollHeight;
+      stageShow(currentPersona, false);
     } else if (msg.type === "done") {
       if (assistantBubble) speak(assistantBubble.textContent);
       assistantBubble = null;
     } else if (msg.type === "blocked") {
       addBubble("Diese Nachricht konnte ich so nicht beantworten.", "notice");
       assistantBubble = null;
+      stageIdle();
     }
   });
 }
@@ -100,6 +169,7 @@ function sendMessage() {
   const text = textInput.value.trim();
   if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
   addBubble(text, "user");
+  stageShow(currentPersona, false);
   socket.send(text);
   textInput.value = "";
 }
@@ -206,8 +276,23 @@ if (SpeechRecognition || navigator.mediaDevices) {
   micBtn.title = "Spracherkennung wird von diesem Browser nicht unterstützt.";
 }
 
+// Sicherheitsnetz fuer die Avatar-Buehne: falls "ended"/"end"/"error"
+// aus irgendeinem Grund nie feuert (keine Stimme installiert, Geraet
+// haengt), darf die Buehne nicht fuer immer im "spricht"-Zustand
+// stecken bleiben - spaetestens nach einer grosszuegigen, an der
+// Textlaenge orientierten Schaetzung wird sie freigegeben. Per echtem
+// Test in einer Headless-Umgebung ohne installierte Stimmen gefunden
+// (dort feuert speechSynthesis weder "end" noch "error").
+function scheduleStageSafetyNet(text) {
+  const timer = setTimeout(stageIdle, Math.max(4000, text.length * 90));
+  return () => clearTimeout(timer);
+}
+
 async function speak(text) {
-  if (!text) return;
+  if (!text) {
+    stageIdle();
+    return;
+  }
   if (ttsMode === "server") {
     const start = performance.now();
     try {
@@ -220,7 +305,11 @@ async function speak(text) {
       const blob = await res.blob();
       const seconds = ((performance.now() - start) / 1000).toFixed(1);
       showLatencyNotice(`Sprachausgabe (Server): ${seconds}s`);
-      new Audio(URL.createObjectURL(blob)).play();
+      const audio = new Audio(URL.createObjectURL(blob));
+      stageShow(currentPersona, true);
+      const clearSafetyNet = scheduleStageSafetyNet(text);
+      audio.addEventListener("ended", () => { clearSafetyNet(); stageIdle(); });
+      audio.play();
     } catch (err) {
       // Stiller Fallback aufs Geraet - die Antwort soll trotzdem
       // hoerbar sein, auch wenn der Sprachdienst gerade nicht laeuft.
@@ -232,9 +321,17 @@ async function speak(text) {
 }
 
 function speakOnDevice(text) {
-  if (!window.speechSynthesis || !text) return;
+  if (!window.speechSynthesis || !text) {
+    stageIdle();
+    return;
+  }
   const utter = new SpeechSynthesisUtterance(text);
   utter.lang = "de-AT";
+  stageShow(currentPersona, true);
+  const clearSafetyNet = scheduleStageSafetyNet(text);
+  const finish = () => { clearSafetyNet(); stageIdle(); };
+  utter.addEventListener("end", finish);
+  utter.addEventListener("error", finish);
   window.speechSynthesis.speak(utter);
 }
 
@@ -248,6 +345,8 @@ document.getElementById("panelClose").addEventListener("click", () => {
 
 const sttModeSelect = document.getElementById("sttModeSelect");
 const ttsModeSelect = document.getElementById("ttsModeSelect");
+const uiModeSelect = document.getElementById("uiModeSelect");
+const avatarStyleSelect = document.getElementById("avatarStyleSelect");
 sttModeSelect.addEventListener("change", (e) => {
   sttMode = e.target.value;
   localStorage.setItem("senior_companion_stt_mode", sttMode);
@@ -256,6 +355,16 @@ ttsModeSelect.addEventListener("change", (e) => {
   ttsMode = e.target.value;
   localStorage.setItem("senior_companion_tts_mode", ttsMode);
 });
+uiModeSelect.addEventListener("change", (e) => {
+  uiMode = e.target.value;
+  localStorage.setItem("senior_companion_ui_mode", uiMode);
+  applyUiMode();
+});
+avatarStyleSelect.addEventListener("change", (e) => {
+  avatarStyle = e.target.value;
+  localStorage.setItem("senior_companion_avatar_style", avatarStyle);
+  refreshAvatarStyles();
+});
 
 async function openPanel() {
   panelOverlay.hidden = false;
@@ -263,6 +372,8 @@ async function openPanel() {
   document.getElementById("panelUser").textContent = `Profil auf diesem Gerät: ${USER_ID}`;
   sttModeSelect.value = sttMode;
   ttsModeSelect.value = ttsMode;
+  uiModeSelect.value = uiMode;
+  avatarStyleSelect.value = avatarStyle;
 
   const logRes = await fetch(`/api/transparency/${USER_ID}`);
   const log = await logRes.json();

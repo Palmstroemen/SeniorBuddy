@@ -22,10 +22,14 @@
   </button>
 </header>
 
-<main class="chat-area" id="chatArea" aria-live="polite">
+<main class="chat-area" id="chatArea" aria-live="polite" hidden>
   <div class="welcome">
     <p>Tippe unten etwas, oder halte den Mikrofon-Knopf gedrückt, um zu sprechen.</p>
   </div>
+</main>
+
+<main class="avatar-stage" id="avatarStage" aria-live="polite">
+  <p class="stage-hint" id="stageHint">Tippe unten etwas, oder halte den Mikrofon-Knopf gedrückt, um zu sprechen.</p>
 </main>
 
 <footer class="composer">
@@ -45,6 +49,22 @@
 
     <h3>Zusatz-Funktionen (Plugins)</h3>
     <ul id="pluginList" class="plugin-list"></ul>
+
+    <h3>Oberfläche</h3>
+    <label class="speech-setting">
+      Ansicht
+      <select id="uiModeSelect">
+        <option value="avatar">Avatar-Ansicht</option>
+        <option value="text">Text-Chat</option>
+      </select>
+    </label>
+    <label class="speech-setting">
+      Avatar-Stil
+      <select id="avatarStyleSelect">
+        <option value="stick">Strichmännchen</option>
+        <option value="flat">Flächig</option>
+      </select>
+    </label>
 
     <h3>Sprache</h3>
     <p class="panel-intro">Läuft Spracherkennung/-ausgabe auf diesem
