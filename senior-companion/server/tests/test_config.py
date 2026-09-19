@@ -45,6 +45,11 @@ def test_neutral_reuses_the_maennlich_voice():
         assert persona.variants["neutral"].voice_id == persona.variants["maennlich"].voice_id
 
 
+def test_all_personas_have_reengagement_tendency_between_0_and_1():
+    for persona in config.PERSONAS.values():
+        assert 0.0 <= persona.reengagement_tendency <= 1.0
+
+
 def test_every_variant_defaults_to_sie_form():
     """Ohne diesen Hinweis wuerde das Sprachmodell die Anrede-Form
     selbst improvisieren - siehe main.py, das den tatsaechlichen

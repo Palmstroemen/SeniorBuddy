@@ -96,7 +96,7 @@ async function loadPersonas() {
   const res = await fetch("/api/personas");
   const personas = await res.json();
   personaTabs.innerHTML = "";
-  personas.forEach((p, i) => {
+  personas.forEach((p) => {
     PERSONA_NAMES[p.id] = p.display_name;
     const btn = document.createElement("button");
     btn.className = "persona-tab";
@@ -107,43 +107,78 @@ async function loadPersonas() {
       </span>
       <span class="tab-label">${p.display_name}</span>
     `;
-    btn.addEventListener("click", () => switchPersona(p.id));
+    btn.addEventListener("click", () => addressPersona(p.id));
     personaTabs.appendChild(btn);
-    if (i === 0) switchPersona(p.id);
   });
   stageIdle();
   applyUiMode();
+  connect();
 }
 
-function switchPersona(personaId) {
-  currentPersona = personaId;
+// Klick auf ein Taskleisten-Icon spricht die Person an, statt die
+// Verbindung neu aufzubauen - im Gruppenchat gibt es nur EINEN Socket
+// (siehe connect() unten). Nutzt dieselbe Namens-Ansprache, die der
+// Server auch bei getipptem/gesprochenem Text erkennt (room.py),
+// deshalb kein zweiter Erkennungsweg noetig.
+function addressPersona(personaId) {
+  const name = PERSONA_NAMES[personaId];
+  if (!name) return;
+  const current = textInput.value.trimStart();
+  if (!current.toLowerCase().startsWith(name.toLowerCase())) {
+    textInput.value = current ? `${name}, ${current}` : `${name}, `;
+  }
+  textInput.focus();
+  const len = textInput.value.length;
+  textInput.setSelectionRange(len, len);
+}
+
+function markPersonaActive(personaId) {
   document.querySelectorAll(".persona-tab").forEach((el) => {
     el.classList.toggle("active", el.dataset.persona === personaId);
   });
-  chatArea.innerHTML = "";
-  stageIdle();
-  connect(personaId);
 }
 
-// --- WebSocket-Verbindung -------------------------------------------
+// Rein kosmetisch (siehe .persona-tab.present in style.css): sobald
+// wir eine Antwort von dieser Persona gesehen haben, war sie laut
+// Server tatsaechlich im Raum - keine eigene Anwesenheits-Abfrage
+// noetig fuer diese kleine visuelle Rueckmeldung.
+function markPersonaPresent(personaId) {
+  const tab = document.querySelector(`.persona-tab[data-persona="${personaId}"]`);
+  if (tab) tab.classList.add("present");
+}
 
-function connect(personaId) {
+// --- WebSocket-Verbindung ---------------------------------------------
+//
+// Ein gemeinsamer Raum-Socket fuer alle Personas (Gruppenchat, siehe
+// /ws/room/{user_id} in main.py) statt einer Verbindung pro Person -
+// welche Persona gerade antwortet, steht im "persona"-Feld jeder
+// token/done-Nachricht und bestimmt currentPersona von dort aus.
+
+function connect() {
   if (socket) socket.close();
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  socket = new WebSocket(`${proto}://${location.host}/ws/chat/${USER_ID}/${personaId}`);
+  socket = new WebSocket(`${proto}://${location.host}/ws/room/${USER_ID}`);
 
   let assistantBubble = null;
 
   socket.addEventListener("message", (event) => {
     const msg = JSON.parse(event.data);
     if (msg.type === "token") {
+      if (msg.persona && msg.persona !== currentPersona) {
+        currentPersona = msg.persona;
+        markPersonaActive(currentPersona);
+      }
       if (!assistantBubble) {
         assistantBubble = addBubble("", "assistant", currentPersona);
       }
       assistantBubble.textContent += msg.content;
       chatArea.scrollTop = chatArea.scrollHeight;
       stageShow(currentPersona, false);
+      markPersonaPresent(currentPersona);
     } else if (msg.type === "done") {
+      if (msg.persona) currentPersona = msg.persona;
+      markPersonaActive(currentPersona);
+      markPersonaPresent(currentPersona);
       if (assistantBubble) speak(assistantBubble.textContent);
       assistantBubble = null;
     } else if (msg.type === "blocked") {
@@ -169,7 +204,7 @@ function sendMessage() {
   const text = textInput.value.trim();
   if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
   addBubble(text, "user");
-  stageShow(currentPersona, false);
+  if (currentPersona) stageShow(currentPersona, false);
   socket.send(text);
   textInput.value = "";
 }

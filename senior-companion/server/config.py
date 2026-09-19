@@ -44,6 +44,11 @@ class PersonaConfig:
     variants: dict[str, PersonaVariant]
     always_loaded: bool = True  # False = wird nur bei Bedarf/Termin geladen
     max_tokens: int = 400
+    # 0..1: wie stark diese Persona im Gruppenchat dazu neigt, die
+    # Person mit einer Frage wieder ins Gespraech zu holen, statt kurz
+    # zu antworten und das Wort weiterzugeben - Charaktereigenschaft,
+    # daher hier auf PersonaConfig statt der gegenderten PersonaVariant.
+    reengagement_tendency: float = 0.5
 
     def _active_variant(self) -> PersonaVariant:
         gender = PERSONA_GENDER.get(self.id, "neutral")
@@ -67,6 +72,7 @@ PERSONAS: dict[str, PersonaConfig] = {
         id="freundin",
         model="qwen2.5:7b-instruct",
         always_loaded=True,
+        reengagement_tendency=0.8,
         variants={
             "neutral": PersonaVariant(
                 display_name="Robin",
@@ -146,6 +152,7 @@ PERSONAS: dict[str, PersonaConfig] = {
         id="reporter",
         model="qwen2.5:7b-instruct",
         always_loaded=True,
+        reengagement_tendency=0.6,
         variants={
             "neutral": PersonaVariant(
                 display_name="Alex",
@@ -219,6 +226,7 @@ PERSONAS: dict[str, PersonaConfig] = {
         model="qwen2.5:32b-instruct",  # bewusst kein 200B+ Modell, siehe Architekturgespraech
         always_loaded=True,  # bei 64-96GB RAM meist dauerhaft haltbar; sonst Scheduler nutzen
         max_tokens=600,
+        reengagement_tendency=0.2,
         variants={
             "neutral": PersonaVariant(
                 display_name="Wallner",
@@ -292,6 +300,7 @@ PERSONAS: dict[str, PersonaConfig] = {
         id="technikerin",
         model="qwen2.5:7b-instruct",
         always_loaded=True,
+        reengagement_tendency=0.4,
         variants={
             "neutral": PersonaVariant(
                 display_name="Toni",

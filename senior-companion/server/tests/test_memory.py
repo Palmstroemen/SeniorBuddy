@@ -748,3 +748,174 @@ def test_execute_death_directives_vacuums_exactly_once(monkeypatch):
     count = memory.execute_death_directives("death_user5")
     assert count == 2
     assert calls == ["death_user5"]
+
+
+# --- Gruppenchat: geteiltes Gedaechtnis ueber links_to_id ----------------
+
+def test_migrate_adds_links_to_id_column_to_existing_db():
+    db_path = memory.db_path_for("premigration_links_user")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "persona TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, "
+        "ts REAL NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    with memory.get_db("premigration_links_user") as db:
+        cols = [r[1] for r in db.execute("PRAGMA table_info(messages)").fetchall()]
+    assert "links_to_id" in cols
+
+
+def test_add_linked_message_creates_a_row_pointing_at_the_master():
+    master_id = memory.add_message("link_user1", "freundin", "assistant", "Hallo!")
+    linked_id = memory.add_linked_message("link_user1", "professor", "assistant", master_id)
+    with memory.get_db("link_user1") as db:
+        row = db.execute(
+            "SELECT links_to_id, persona FROM messages WHERE id=?", (linked_id,)
+        ).fetchone()
+    assert row["links_to_id"] == master_id
+    assert row["persona"] == "professor"
+
+
+def test_recent_messages_resolves_linked_row_content_via_master():
+    master_id = memory.add_message("link_user2", "freundin", "assistant", "Es regnet heute.")
+    memory.add_linked_message("link_user2", "professor", "assistant", master_id)
+
+    professor_view = memory.recent_messages("link_user2", "professor", limit=20)
+    assert len(professor_view) == 1
+    assert professor_view[0]["content"] == "Es regnet heute."
+    assert professor_view[0]["role"] == "assistant"
+
+
+def test_recent_messages_skips_row_with_dangling_link():
+    with memory.get_db("link_user3") as db:
+        db.execute(
+            "INSERT INTO messages (persona, role, content, ts, links_to_id) "
+            "VALUES (?,?,?,?,?)",
+            ("professor", "assistant", "", 1000.0, 999999),  # zeigt ins Leere
+        )
+    assert memory.recent_messages("link_user3", "professor", limit=20) == []
+
+
+def test_recent_messages_unaffected_for_rows_without_a_link():
+    memory.add_message("link_user4", "freundin", "user", "Ganz normal.")
+    view = memory.recent_messages("link_user4", "freundin", limit=20)
+    assert len(view) == 1
+    assert view[0]["content"] == "Ganz normal."
+
+
+# --- Loesch-/Befoerderungs-Semantik fuer verlinkte Nachrichten -----------
+
+def _add_master_and_two_links(user_id):
+    master_id = memory.add_message(user_id, "freundin", "assistant", "Das Original.")
+    link_a = memory.add_linked_message(user_id, "professor", "assistant", master_id)
+    link_b = memory.add_linked_message(user_id, "technikerin", "assistant", master_id)
+    return master_id, link_a, link_b
+
+
+def test_delete_own_view_removes_only_that_persona_link_master_untouched():
+    master_id, link_a, link_b = _add_master_and_two_links("del_link_user1")
+    memory.delete_own_view("del_link_user1", link_a)
+
+    assert memory.recent_messages("del_link_user1", "professor", limit=20) == []
+    # Master und der andere Link bleiben unberuehrt.
+    assert len(memory.recent_messages("del_link_user1", "freundin", limit=20)) == 1
+    assert len(memory.recent_messages("del_link_user1", "technikerin", limit=20)) == 1
+
+
+def test_delete_master_with_handoff_promotes_oldest_remaining_link():
+    master_id, link_a, link_b = _add_master_and_two_links("del_link_user2")
+    memory.delete_master_with_handoff("del_link_user2", master_id)
+
+    # Freundin (der urspruengliche Master) hat die Nachricht nicht mehr.
+    assert memory.recent_messages("del_link_user2", "freundin", limit=20) == []
+    # professor (die aeltere verbleibende Verlinkung) ist jetzt der neue Master.
+    professor_view = memory.recent_messages("del_link_user2", "professor", limit=20)
+    assert len(professor_view) == 1
+    assert professor_view[0]["content"] == "Das Original."
+    with memory.get_db("del_link_user2") as db:
+        row = db.execute("SELECT links_to_id FROM messages WHERE id=?", (link_a,)).fetchone()
+    assert row["links_to_id"] is None
+
+
+def test_delete_master_with_handoff_repoints_all_other_links_to_new_master():
+    master_id, link_a, link_b = _add_master_and_two_links("del_link_user3")
+    memory.delete_master_with_handoff("del_link_user3", master_id)
+
+    with memory.get_db("del_link_user3") as db:
+        row = db.execute("SELECT links_to_id FROM messages WHERE id=?", (link_b,)).fetchone()
+    assert row["links_to_id"] == link_a  # zeigt jetzt auf den neuen Master
+    # technikerin sieht den Inhalt weiterhin korrekt aufgeloest.
+    technikerin_view = memory.recent_messages("del_link_user3", "technikerin", limit=20)
+    assert technikerin_view[0]["content"] == "Das Original."
+
+
+def test_delete_master_with_handoff_no_remaining_links_just_deletes():
+    master_id = memory.add_message("del_link_user4", "freundin", "assistant", "Einzelne Nachricht.")
+    memory.delete_master_with_handoff("del_link_user4", master_id)
+    assert memory.recent_messages("del_link_user4", "freundin", limit=20) == []
+
+
+def test_delete_utterance_entirely_removes_master_and_all_links():
+    master_id, link_a, link_b = _add_master_and_two_links("del_link_user5")
+    memory.delete_utterance_entirely("del_link_user5", master_id)
+
+    assert memory.recent_messages("del_link_user5", "freundin", limit=20) == []
+    assert memory.recent_messages("del_link_user5", "professor", limit=20) == []
+    assert memory.recent_messages("del_link_user5", "technikerin", limit=20) == []
+
+
+def test_confirm_pending_deletion_never_touches_linked_rows_on_other_topics():
+    """Regressionswaechter: die bestehenden secrecy.py-Loeschpfade
+    duerfen verlinkte Gruppenchat-Nachrichten auf einem ANDEREN Thema
+    nicht mitreissen."""
+    memory.open_pending_topic("del_link_user6", "freundin")
+    memory.capture_topic_label("del_link_user6", "freundin", "heinrich")
+    memory.add_message(
+        "del_link_user6", "freundin", "user", "geheim ueber heinrich",
+        topic="heinrich",
+    )
+    memory.record_deletion_directive(
+        "del_link_user6", "freundin", "heinrich", "loesch das",
+        mode="pending_confirmation",
+    )
+
+    # Unabhaengige, geteilte Gruppenchat-Nachricht auf einem anderen Thema.
+    other_master_id = memory.add_message("del_link_user6", "freundin", "assistant", "Normales Gespraech.")
+    memory.add_linked_message("del_link_user6", "professor", "assistant", other_master_id)
+
+    memory.confirm_pending_deletion("del_link_user6", "freundin")
+
+    professor_view = memory.recent_messages("del_link_user6", "professor", limit=20)
+    assert len(professor_view) == 1
+    assert professor_view[0]["content"] == "Normales Gespraech."
+
+
+def test_has_pending_secrecy_interaction_true_while_topic_name_unanswered():
+    memory.open_pending_topic("pending_secrecy_user1", "freundin")
+    assert memory.has_pending_secrecy_interaction("pending_secrecy_user1", "freundin") is True
+
+
+def test_has_pending_secrecy_interaction_false_once_topic_named():
+    memory.open_pending_topic("pending_secrecy_user2", "freundin")
+    memory.capture_topic_label("pending_secrecy_user2", "freundin", "heinrich")
+    assert memory.has_pending_secrecy_interaction("pending_secrecy_user2", "freundin") is False
+
+
+def test_has_pending_secrecy_interaction_true_while_deletion_unconfirmed():
+    memory.record_deletion_directive(
+        "pending_secrecy_user3", "freundin", "heinrich", "loesch das",
+        mode="pending_confirmation",
+    )
+    assert memory.has_pending_secrecy_interaction("pending_secrecy_user3", "freundin") is True
+
+
+def test_has_pending_secrecy_interaction_false_for_other_persona():
+    memory.open_pending_topic("pending_secrecy_user4", "freundin")
+    assert memory.has_pending_secrecy_interaction("pending_secrecy_user4", "professor") is False
+
+
+def test_has_pending_secrecy_interaction_false_when_nothing_open():
+    assert memory.has_pending_secrecy_interaction("pending_secrecy_user5", "freundin") is False

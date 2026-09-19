@@ -21,12 +21,15 @@ from pydantic import BaseModel
 import admin_auth
 import admin_settings
 import analysis
+import autoturn
 import config
+import director
 import honeypot
 import knowledge
 import llm_client
 import memory
 import priority
+import room
 import satisfaction
 import secrecy
 import security
@@ -60,6 +63,8 @@ def _apply_persisted_admin_settings():
         honeypot.NTFY_TOPIC = settings["ntfy_topic"]
     if "satisfaction_interval_days" in settings:
         satisfaction.CHECKIN_INTERVAL_DAYS = settings["satisfaction_interval_days"]
+    if "auto_turns_enabled" in settings:
+        autoturn.ENABLED = settings["auto_turns_enabled"]
 
 
 @asynccontextmanager
@@ -335,6 +340,336 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
 
 
 # ---------------------------------------------------------------------
+# Gruppenchat: mehrere Personas koennen gleichzeitig "anwesend" sein.
+#
+# Zusaetzlich zu /ws/chat/{user_id}/{persona_id} oben (bleibt
+# unveraendert bestehen) - EIN gemeinsamer Socket pro Nutzer:in deckt
+# alle anwesenden Personas ab. Der "Regisseur" (director.py) waehlt die
+# Antwortende, sofern niemand ausdruecklich angesprochen wurde
+# (room.py). Vertrauliche Themen (secrecy.py) werden NIE zwischen
+# Personas geteilt - siehe die Fan-out-Bedingung unten, der
+# sicherheitskritischste Einzelpunkt dieser ganzen Funktion.
+# ---------------------------------------------------------------------
+
+async def run_turn(
+    user_id: str, persona, websocket: WebSocket, user_text: str,
+    addressed: str | None, present: list[str],
+):
+    if persona.id == "technikerin":
+        memory.record_feedback_reply(user_id, persona.id, user_text)
+
+    secrecy_outcome = secrecy.handle_turn(user_id, persona.id, user_text)
+
+    memory.add_message(
+        user_id, persona.id, "user", user_text,
+        topic=secrecy_outcome.topic_for_tagging,
+    )
+    room.touch(user_id, persona.id)
+
+    history = memory.recent_messages(user_id, persona.id, limit=20)
+    chat_messages = [
+        {"role": m["role"], "content": m["content"]} for m in history
+    ]
+
+    triggered = find_triggered_plugin(plugins, persona.id, user_text)
+    if triggered:
+        plugin_output = await run_plugin(triggered, user_text, user_id)
+        if plugin_output:
+            context_check = guard.check_context(plugin_output)
+            if context_check["ok"]:
+                chat_messages.append({
+                    "role": "system",
+                    "content": f"[Rechercheergebnis von {triggered.name}]: {plugin_output}",
+                })
+            else:
+                log.warning(
+                    "Plugin-Kontext von '%s' blockiert (Regel=%s)",
+                    triggered.id, context_check["rule"],
+                )
+
+    facts = memory.list_facts(user_id, limit=20)
+    if facts:
+        fact_lines = "; ".join(f"{f['key']}: {f['value']}" for f in facts)
+        chat_messages.append({
+            "role": "system",
+            "content": f"Bekannte Fakten ueber {user_id}: {fact_lines}",
+        })
+
+    if persona.id in KNOWLEDGE_PERSONAS:
+        for match in knowledge.search(user_id, user_text):
+            context_check = guard.check_context(match.text)
+            if context_check["ok"]:
+                chat_messages.append({
+                    "role": "system",
+                    "content": f"[Wissensbasis: {match.title}]: {match.text}",
+                })
+            else:
+                log.warning(
+                    "Wissens-Kontext '%s' blockiert (Regel=%s)",
+                    match.title, context_check["rule"],
+                )
+
+    anrede_key = f"anrede:{persona.id}"
+    if (
+        analysis.detect_du_offer(user_text)
+        and memory.get_fact(user_id, anrede_key) != "du"
+    ):
+        memory.add_fact(user_id, anrede_key, "du", source_persona=persona.id)
+    anrede = memory.get_fact(user_id, anrede_key) or "sie"
+    chat_messages.append({
+        "role": "system",
+        "content": (
+            f"Anrede-Form fuer diese Person bei dieser Persona: {anrede}. "
+            f"Sprich konsequent in der "
+            f"{'Du' if anrede == 'du' else 'Sie'}-Form."
+        ),
+    })
+
+    if persona.id == "technikerin" and satisfaction.is_due(user_id, persona.id):
+        chat_messages.append({
+            "role": "system", "content": satisfaction.CHECKIN_PROMPT,
+        })
+        memory.record_feedback_asked(user_id, persona.id)
+
+    for line in secrecy_outcome.system_context:
+        chat_messages.append({"role": "system", "content": line})
+
+    # Nur einblenden, wenn niemand ausdruecklich angesprochen wurde UND
+    # mehrere Personas anwesend sind - bei nur einer anwesenden Person
+    # (heutiger Normalfall) bleibt der Prompt identisch zu /ws/chat.
+    if addressed is None and len(present) > 1:
+        chat_messages.append({
+            "role": "system", "content": director.DEFLECTION_HINT_PROMPT,
+        })
+
+    full_response = ""
+    priority.senior_stream_started()
+    try:
+        async for token in llm_client.stream(
+            persona.model, persona.system_prompt, chat_messages,
+            max_tokens=persona.max_tokens,
+        ):
+            full_response += token
+            await websocket.send_json({
+                "type": "token", "content": token, "persona": persona.id,
+            })
+    finally:
+        priority.senior_stream_finished()
+
+    master_id = memory.add_message(
+        user_id, persona.id, "assistant", full_response,
+        topic=secrecy_outcome.topic_for_tagging,
+    )
+
+    # Fan-out an andere anwesende Personas - NIE bei einem gerade
+    # vertraulichen Thema. secrecy_outcome.topic_for_tagging ist genau
+    # dann gesetzt, wenn fuer DIESE Persona jetzt ein aktives
+    # vertrauliches Thema existiert - keine zweite Pruefung noetig.
+    if secrecy_outcome.topic_for_tagging is None:
+        for other_id in present:
+            if other_id != persona.id:
+                memory.add_linked_message(user_id, other_id, "assistant", master_id)
+
+    await websocket.send_json({"type": "done", "persona": persona.id})
+
+
+async def run_auto_turn(
+    user_id: str, persona, websocket: WebSocket, present: list[str], final: bool,
+) -> bool:
+    """Unaufgeforderte Fortsetzung ohne neue Nutzer-Nachricht. Bewusst
+    OHNE secrecy.handle_turn() (kein echter Nutzer-Text zum
+    Interpretieren), OHNE Plugin-Trigger/Fakten-/Wissensbasis-Injektion
+    (der Auto-Prompt bittet explizit ums freie Weiterreden, nicht ums
+    Beantworten einer Frage - neu injizierte Fakten wuerden eher als
+    Non-Sequitur wirken als die ohnehin vorhandene Historie sinnvoll zu
+    ergaenzen), OHNE Anrede-Erkennung/Zufriedenheits-Checkin/
+    DEFLECTION_HINT_PROMPT (es wurde niemand angesprochen).
+
+    Laeuft als Low-Priority-Task (priority.register_low_priority_task,
+    NICHT senior_stream_started/finished) - exakt das Muster von
+    raw_chat(): schuetzt eine ECHTE Senior-Anfrage auf einer ANDEREN
+    Verbindung (anderes /ws/room, oder /ws/chat - z.B. ein Familien-
+    mitglied oder eine zweite Person bei einer spaeteren Mehrbenutzer-
+    Installation) davor, hinter dieser unaufgeforderten, niedrigwertigen
+    Generierung im seriellen Ollama-Backend zu warten. Auf DERSELBEN
+    Verbindung kann waehrend des Wartens auf den LLM-Stream ohnehin
+    keine neue echte Nachricht eintreffen (room_chat()'s Schleife ist
+    sequenziell, kein nebenlaeufiges Empfangen) - Praeemption wirkt hier
+    also ausschliesslich verbindungsuebergreifend, nicht als Unterbrechung
+    mitten im eigenen Stream.
+
+    Gibt zurueck, ob der Auto-Turn tatsaechlich abgeschlossen wurde
+    (False bei Abbruch durch eine echte Senior-Anfrage anderswo - dann
+    wird nichts gespeichert, nichts gesendet, room.touch() NICHT
+    aufgerufen: ein abgebrochener Versuch zaehlt nicht als "hat
+    gesprochen")."""
+    topic_for_tagging = memory.active_topic(user_id, persona.id)
+
+    history = memory.recent_messages(user_id, persona.id, limit=20)
+    chat_messages = [
+        {"role": m["role"], "content": m["content"]} for m in history
+    ]
+    chat_messages.append({
+        "role": "system",
+        "content": autoturn.AUTO_WRAPUP_PROMPT if final else autoturn.AUTO_CONTINUE_PROMPT,
+    })
+
+    tokens: list[str] = []
+
+    async def collect():
+        async for token in llm_client.stream(
+            persona.model, persona.system_prompt, chat_messages,
+            max_tokens=persona.max_tokens,
+        ):
+            tokens.append(token)
+            await websocket.send_json({
+                "type": "token", "content": token, "persona": persona.id,
+                "auto": True,
+            })
+
+    gen_task = asyncio.create_task(collect())
+    priority.register_low_priority_task(gen_task)
+    try:
+        await gen_task
+    except asyncio.CancelledError:
+        return False
+    finally:
+        priority.unregister_low_priority_task(gen_task)
+
+    full_response = "".join(tokens)
+    room.touch(user_id, persona.id)
+    master_id = memory.add_message(
+        user_id, persona.id, "assistant", full_response, topic=topic_for_tagging,
+    )
+
+    if topic_for_tagging is None:
+        for other_id in present:
+            if other_id != persona.id:
+                memory.add_linked_message(user_id, other_id, "assistant", master_id)
+
+    await websocket.send_json({"type": "done", "persona": persona.id, "auto": True})
+    return True
+
+
+@app.websocket("/ws/room/{user_id}")
+async def room_chat(websocket: WebSocket, user_id: str):
+    await websocket.accept()
+
+    last_user_message_ts = time.time()
+    consecutive_auto_turns = 0
+    wrapup_sent = False
+
+    try:
+        while True:
+            try:
+                user_text = await asyncio.wait_for(
+                    websocket.receive_text(), timeout=autoturn.SHORT_PAUSE_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                if not autoturn.ENABLED:
+                    continue
+
+                present = room.present_personas(user_id)
+                if not present:
+                    continue
+
+                elapsed = time.time() - last_user_message_ts
+                phase = autoturn.decide_phase(elapsed, consecutive_auto_turns)
+
+                if phase == "quiet":
+                    continue
+
+                candidates = [
+                    p for p in present
+                    if not memory.has_pending_secrecy_interaction(user_id, p)
+                ]
+                if not candidates:
+                    continue
+
+                if phase == "wrapup":
+                    if wrapup_sent:
+                        continue
+                    picked_id = max(
+                        candidates, key=lambda p: room.last_active_ts(user_id, p) or 0.0,
+                    )
+                    persona = PERSONAS.get(picked_id) or PERSONAS[FALLBACK_PERSONA]
+                    completed = await run_auto_turn(
+                        user_id, persona, websocket, present, final=True,
+                    )
+                    if completed:
+                        wrapup_sent = True
+                    continue
+
+                # phase == "continue_eligible": Gate auf die ZULETZT
+                # aktive anwesende Person (present, nicht candidates -
+                # wer zuletzt sprach ist ein Fakt, unabhaengig vom
+                # aktuellen Geheimnis-Status), NICHT auf die naechste
+                # Kandidatin - wer gerade eine Frage gestellt hat, soll
+                # den Ausschlag geben, ob ueberhaupt weitergeredet wird,
+                # bevor ueberhaupt feststeht, WER als naechstes drankaeme.
+                last_speaker_id = max(
+                    present, key=lambda p: room.last_active_ts(user_id, p) or 0.0,
+                )
+                last_speaker = PERSONAS.get(last_speaker_id) or PERSONAS[FALLBACK_PERSONA]
+                if not autoturn.should_continue(last_speaker.reengagement_tendency):
+                    continue
+
+                last_active = {p: (room.last_active_ts(user_id, p) or 0.0) for p in candidates}
+                picked_id = director.pick_responder(candidates, None, last_active, time.time())
+                persona = PERSONAS.get(picked_id) or PERSONAS[FALLBACK_PERSONA]
+                completed = await run_auto_turn(
+                    user_id, persona, websocket, present, final=False,
+                )
+                if completed:
+                    consecutive_auto_turns += 1
+                continue
+
+            input_check = guard.check_input(user_text)
+            if not input_check["ok"]:
+                log.warning(
+                    "Eingabe blockiert (Regel=%s) im Raum von %s",
+                    input_check["rule"], user_id,
+                )
+                await websocket.send_json({
+                    "type": "blocked", "reason": input_check["rule"],
+                })
+                continue
+
+            last_user_message_ts = time.time()
+            consecutive_auto_turns = 0
+            wrapup_sent = False
+
+            candidates_map = {pid: p.display_name for pid, p in PERSONAS.items()}
+            addressed = room.detect_addressed_persona(user_text, candidates_map)
+            if addressed is not None:
+                room.touch(user_id, addressed)
+
+            present = room.present_personas(user_id)
+            if not present:
+                present = [addressed] if addressed else [FALLBACK_PERSONA]
+
+            # Ein offener vertraulicher Wortwechsel (secrecy.py) bindet
+            # eine unadressierte Folgenachricht an dieselbe Persona -
+            # sonst koennte der Regisseur z.B. den bloss genannten
+            # Themen-Namen an eine andere anwesende Persona routen, wo
+            # er ungetaggt (also ungeschuetzt) landen wuerde.
+            if addressed is None:
+                for pid in present:
+                    if memory.has_pending_secrecy_interaction(user_id, pid):
+                        addressed = pid
+                        break
+
+            last_active = {p: (room.last_active_ts(user_id, p) or 0.0) for p in present}
+            picked_id = director.pick_responder(present, addressed, last_active, time.time())
+            persona = PERSONAS.get(picked_id) or PERSONAS[FALLBACK_PERSONA]
+
+            await run_turn(user_id, persona, websocket, user_text, addressed, present)
+
+    except WebSocketDisconnect:
+        log.info("Raum-Verbindung getrennt: %s", user_id)
+
+
+# ---------------------------------------------------------------------
 # Ausserordentlicher Nutzer: roher Chat mit niedriger Prioritaet
 #
 # Kein Persona-System-Prompt, kein memory.py (keine Senior-Identitaet,
@@ -562,6 +897,20 @@ def set_satisfaction_interval(body: SatisfactionIntervalUpdate):
     satisfaction.CHECKIN_INTERVAL_DAYS = body.days
     admin_settings.update("satisfaction_interval_days", body.days)
     return {"days": body.days}
+
+
+class AutoTurnEnabledUpdate(BaseModel):
+    enabled: bool
+
+
+@app.post(
+    "/admin/config/auto-turns",
+    dependencies=[Depends(admin_auth.require_admin)],
+)
+def set_auto_turns_enabled(body: AutoTurnEnabledUpdate):
+    autoturn.ENABLED = body.enabled
+    admin_settings.update("auto_turns_enabled", body.enabled)
+    return {"enabled": body.enabled}
 
 
 @app.get("/admin/feedback", dependencies=[Depends(admin_auth.require_admin)])

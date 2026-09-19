@@ -183,6 +183,35 @@ def test_set_satisfaction_interval_survives_simulated_restart():
     satisfaction.CHECKIN_INTERVAL_DAYS = 7  # aufraeumen
 
 
+def test_set_auto_turns_enabled_takes_effect_and_persists():
+    import autoturn
+    with TestClient(main.app) as client:
+        r = client.post(
+            "/admin/config/auto-turns",
+            json={"enabled": False},
+            headers=ADMIN_HEADERS,
+        )
+    assert r.status_code == 200
+    assert autoturn.ENABLED is False
+    assert admin_settings.load()["auto_turns_enabled"] is False
+    autoturn.ENABLED = True  # aufraeumen
+
+
+def test_set_auto_turns_enabled_survives_simulated_restart():
+    import autoturn
+    with TestClient(main.app) as client:
+        r = client.post(
+            "/admin/config/auto-turns",
+            json={"enabled": False},
+            headers=ADMIN_HEADERS,
+        )
+    assert r.status_code == 200
+    autoturn.ENABLED = True
+    main._apply_persisted_admin_settings()
+    assert autoturn.ENABLED is False
+    autoturn.ENABLED = True  # aufraeumen
+
+
 def test_admin_feedback_empty_by_default():
     with TestClient(main.app) as client:
         r = client.get("/admin/feedback", headers=ADMIN_HEADERS)

@@ -107,6 +107,7 @@ def _migrate(conn: sqlite3.Connection):
         "ALTER TABLE messages ADD COLUMN sentiment TEXT",
         "ALTER TABLE messages ADD COLUMN stance TEXT",
         "ALTER TABLE messages ADD COLUMN topic TEXT",
+        "ALTER TABLE messages ADD COLUMN links_to_id INTEGER",
     ):
         try:
             conn.execute(stmt)
@@ -130,22 +131,53 @@ def get_db(user_id: str):
 
 def add_message(
     user_id: str, persona: str, role: str, content: str, topic: str | None = None
-):
+) -> int:
     with get_db(user_id) as db:
-        db.execute(
+        cur = db.execute(
             "INSERT INTO messages (persona, role, content, ts, topic) VALUES (?,?,?,?,?)",
             (persona, role, content, time.time(), topic),
         )
+        return cur.lastrowid
+
+
+def add_linked_message(
+    user_id: str, persona: str, role: str, links_to_id: int, topic: str | None = None
+) -> int:
+    """Legt eine leichte 'mitgehoert'-Zeile an (Gruppenchat-Fan-out): ihr
+    eigentlicher Inhalt kommt ueber links_to_id von der Master-Zeile
+    (siehe recent_messages()). content bleibt Leerstring, NICHT NULL -
+    die Spalte ist NOT NULL; ob eine Verlinkung tatsaechlich aufgeloest
+    werden konnte, wird beim Lesen anhand des JOIN-Ergebnisses erkannt,
+    nicht anhand von content."""
+    with get_db(user_id) as db:
+        cur = db.execute(
+            "INSERT INTO messages (persona, role, content, ts, topic, links_to_id) "
+            "VALUES (?,?,?,?,?,?)",
+            (persona, role, "", time.time(), topic, links_to_id),
+        )
+        return cur.lastrowid
 
 
 def recent_messages(user_id: str, persona: str, limit: int = 20) -> list[dict]:
+    """Verlinkte Zeilen (Gruppenchat-Fan-out, siehe add_linked_message())
+    werden ueber die Master-Zeile aufgeloest. Eine Zeile mit links_to_id,
+    deren Master nicht (mehr) existiert, wuerde durch den LEFT JOIN kein
+    Gegenstueck finden (orig_id bleibt NULL) - so eine kaputte
+    Verlinkung wird herausgefiltert statt als leere Nachricht an das
+    Sprachmodell weitergereicht."""
     with get_db(user_id) as db:
         rows = db.execute(
-            "SELECT role, content, ts FROM messages WHERE persona=? "
-            "ORDER BY id DESC LIMIT ?",
+            "SELECT m.role, m.links_to_id, orig.id AS orig_id, "
+            "COALESCE(orig.content, m.content) AS content, m.ts "
+            "FROM messages m LEFT JOIN messages orig ON m.links_to_id = orig.id "
+            "WHERE m.persona=? ORDER BY m.id DESC LIMIT ?",
             (persona, limit),
         ).fetchall()
-    return [dict(r) for r in reversed(rows)]
+    return [
+        {"role": r["role"], "content": r["content"], "ts": r["ts"]}
+        for r in reversed(rows)
+        if not (r["links_to_id"] is not None and r["orig_id"] is None)
+    ]
 
 
 def usage_stats(
@@ -510,6 +542,36 @@ def list_topics(user_id: str, persona: str) -> list[str]:
     return [r["label"] for r in rows]
 
 
+def has_pending_secrecy_interaction(
+    user_id: str, persona: str, max_age_seconds: float = 600
+) -> bool:
+    """True, wenn diese Persona gerade mitten in einem vertraulichen
+    Wortwechsel mit der Person steckt: entweder wartet sie auf einen
+    Themen-Namen (open_pending_topic) oder auf eine Ja/Nein-Bestaetigung
+    zum Loeschen (record_deletion_directive mode='pending_confirmation').
+    Wird im Gruppenchat gebraucht (siehe main.py room_chat/director.py):
+    eine unadressierte Folgenachricht wie ein bloss genannter Themenname
+    darf NICHT vom Regisseur an eine andere anwesende Persona geroutet
+    werden, sonst landet die Antwort ungetaggt in deren Sicht - echtes
+    Leck trotz secrecy.py's eigentlich korrekter Tagging-Logik."""
+    cutoff = time.time() - max_age_seconds
+    with get_db(user_id) as db:
+        pending_topic = db.execute(
+            "SELECT 1 FROM active_topics WHERE persona=? AND label IS NULL "
+            "AND closed_ts IS NULL AND opened_ts >= ?",
+            (persona, cutoff),
+        ).fetchone()
+        if pending_topic:
+            return True
+        pending_deletion = db.execute(
+            "SELECT 1 FROM deletion_directives WHERE persona=? "
+            "AND mode='pending_confirmation' AND executed_ts IS NULL "
+            "AND created_ts >= ?",
+            (persona, cutoff),
+        ).fetchone()
+        return pending_deletion is not None
+
+
 # --- Loeschanweisungen -----------------------------------------------------
 #
 # Nach der Ausfuehrung wird nicht nur der Gespraechsinhalt geloescht,
@@ -629,3 +691,65 @@ def execute_death_directives(user_id: str) -> int:
     if rows:
         vacuum(user_id)
     return len(rows)
+
+
+# --- Gruppenchat: geteiltes Gedaechtnis (links_to_id) ---------------------
+#
+# Ein Master haelt den eigentlichen Inhalt, andere anwesende Personas
+# bekommen nur eine leichte, darauf verweisende Zeile (add_linked_message
+# oben). Drei unterschiedliche Loeschabsichten:
+# - delete_own_view: nur eine einzelne Persona "vergisst" es, der Rest
+#   bleibt unberuehrt.
+# - delete_master_with_handoff: der Master selbst wird geloescht, aber es
+#   gibt noch Personas, die sich erinnern - die Master-Rolle wird an eine
+#   von ihnen weitergereicht, damit deren Inhalt nicht verwaist.
+# - delete_utterance_entirely: niemand soll sich mehr erinnern - Master
+#   UND alle Verlinkungen verschwinden zusammen.
+
+def delete_own_view(user_id: str, message_id: int):
+    """Loescht NUR eine verlinkte (nicht-Master) Zeile. Auf eine
+    Master-Zeile angewendet passiert bewusst nichts - dafuer gibt es
+    delete_master_with_handoff()/delete_utterance_entirely()."""
+    with get_db(user_id) as db:
+        db.execute(
+            "DELETE FROM messages WHERE id=? AND links_to_id IS NOT NULL",
+            (message_id,),
+        )
+
+
+def delete_master_with_handoff(user_id: str, master_id: int):
+    """Loescht eine Master-Zeile. Gibt es noch verlinkte Zeilen, wird die
+    aelteste davon zur neuen Master-Zeile befoerdert (Inhalt kopiert,
+    eigenes links_to_id geleert), alle uebrigen werden auf die neue
+    Master-Zeile umgehaengt. Ohne verbleibende Links wird einfach
+    geloescht."""
+    with get_db(user_id) as db:
+        master = db.execute(
+            "SELECT content FROM messages WHERE id=?", (master_id,)
+        ).fetchone()
+        if master is None:
+            return
+        links = db.execute(
+            "SELECT id FROM messages WHERE links_to_id=? ORDER BY id", (master_id,)
+        ).fetchall()
+        if links:
+            new_master_id = links[0]["id"]
+            db.execute(
+                "UPDATE messages SET content=?, links_to_id=NULL WHERE id=?",
+                (master["content"], new_master_id),
+            )
+            remaining_ids = [r["id"] for r in links[1:]]
+            if remaining_ids:
+                db.executemany(
+                    "UPDATE messages SET links_to_id=? WHERE id=?",
+                    [(new_master_id, rid) for rid in remaining_ids],
+                )
+        db.execute("DELETE FROM messages WHERE id=?", (master_id,))
+
+
+def delete_utterance_entirely(user_id: str, master_id: int):
+    """'Niemand erinnert sich mehr' - loescht die Master-Zeile UND jede
+    Zeile, die auf sie verweist, bewusst OHNE Befoerderung."""
+    with get_db(user_id) as db:
+        db.execute("DELETE FROM messages WHERE links_to_id=?", (master_id,))
+        db.execute("DELETE FROM messages WHERE id=?", (master_id,))

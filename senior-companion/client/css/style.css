@@ -89,6 +89,12 @@ body {
   border-color: var(--ink);
 }
 
+/* Rein kosmetisch: zeigt, wer laut Server gerade wirklich "im Raum"
+   ist (schon einmal geantwortet hat), nicht nur anklickbar waere. */
+.persona-tab.present .avatar-shape-bg {
+  box-shadow: 0 0 0 3px var(--accent, #6b8f71);
+}
+
 /* --- Avatare (Icon- und Vollbild-Groesse) --------------------------- */
 /* Bewusst einfache Vektorgrafik statt realistischem, lippensynchronem
    Avatar - zwei waehlbare Stile: "stick" (nur Konturlinien) und
