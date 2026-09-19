@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0">
+<title>Persona-Designer</title>
+<meta name="theme-color" content="#4A5D52">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/admin.css">
+</head>
+<body class="admin-body">
+
+<header class="admin-topbar">
+  <h1>Persona-Designer</h1>
+  <button id="logoutBtn" class="admin-btn admin-btn-secondary" hidden>Abmelden</button>
+</header>
+
+<main id="loginView" class="admin-login">
+  <form id="loginForm">
+    <label>
+      Admin-Token
+      <input type="password" id="tokenInput" required autocomplete="current-password">
+    </label>
+    <button type="submit" class="admin-btn admin-btn-primary">Anmelden</button>
+    <p id="loginError" class="admin-banner admin-banner-error" hidden></p>
+  </form>
+</main>
+
+<main id="appView" hidden>
+  <section id="listView">
+    <div class="admin-list-actions">
+      <button id="newPersonaBtn" class="admin-btn admin-btn-primary">+ Neue Persona anlegen</button>
+    </div>
+    <p id="warningsBanner" class="admin-banner admin-banner-warning" hidden></p>
+    <div id="personaCards" class="admin-cards"></div>
+  </section>
+
+  <section id="formView" hidden>
+    <h2 id="formHeading"></h2>
+    <p id="formError" class="admin-banner admin-banner-error" hidden></p>
+    <form id="personaForm">
+      <label>
+        ID
+        <input type="text" id="idInput" pattern="[a-z][a-z0-9_]{1,31}"
+               title="Kleinbuchstaben, Ziffern, Unterstrich, 2-32 Zeichen">
+        <span id="idReadonly" class="admin-readonly" hidden></span>
+      </label>
+      <label>
+        Modell
+        <input type="text" id="modelInput" list="modelSuggestions" required>
+      </label>
+      <datalist id="modelSuggestions"></datalist>
+      <label class="admin-checkbox-label">
+        <input type="checkbox" id="alwaysLoadedInput">
+        Immer geladen
+      </label>
+      <label>
+        Max. Tokens
+        <input type="number" id="maxTokensInput" min="1" max="4096" required>
+      </label>
+      <label>
+        Neigung, das Gespräch zurückzuholen (0 = zurückhaltend, 1 = fragt oft nach)
+        <span class="admin-range-row">
+          <input type="range" id="reengagementInput" min="0" max="1" step="0.05">
+          <output id="reengagementOutput"></output>
+        </span>
+      </label>
+      <div class="admin-color-row">
+        <label>
+          Farbe
+          <input type="color" id="colorInput">
+        </label>
+        <label>
+          Hintergrundfarbe
+          <input type="color" id="backgroundColorInput">
+        </label>
+        <div id="colorPreview" class="avatar-shape-bg admin-color-preview"></div>
+      </div>
+
+      <div id="variantsContainer"></div>
+      <datalist id="voiceSuggestions"></datalist>
+
+      <div class="admin-form-actions">
+        <button type="submit" class="admin-btn admin-btn-primary">Speichern</button>
+        <button type="button" id="cancelFormBtn" class="admin-btn admin-btn-secondary">Abbrechen</button>
+      </div>
+    </form>
+  </section>
+</main>
+
+<script src="js/admin.js"></script>
+</body>
+</html>

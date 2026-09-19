@@ -31,6 +31,23 @@ let avatarStyle = loadSetting("senior_companion_avatar_style", "stick");
 let currentPersona = null;
 let socket = null;
 const PERSONA_NAMES = {};
+const PERSONA_COLORS = {};
+
+// Setzt Avatar-Farbe/Hintergrund auf dem STABILEN Eltern-Element
+// (.avatar-shape-bg), nicht auf der SVG selbst - refreshAvatarStyles()
+// ersetzt bei einem Stilwechsel (Strichmaennchen/flaechig) nur deren
+// innerHTML, das Eltern-Element bleibt bestehen. --avatar-color ist
+// eine CSS-Custom-Property und vererbt sich an die neu erzeugte SVG
+// darin automatisch weiter - die 4 mitgelieferten Personas behalten
+// unveraendert ihre direkten CSS-Regeln (hoehere Spezifitaet), nur
+// eine neu angelegte Persona ohne eigene CSS-Regel braucht diesen
+// geerbten Wert tatsaechlich.
+function applyPersonaColor(el, personaId) {
+  const colors = PERSONA_COLORS[personaId];
+  if (!el || !colors) return;
+  el.style.setProperty("--avatar-color", colors.color);
+  el.style.background = colors.background;
+}
 
 const chatArea = document.getElementById("chatArea");
 const avatarStage = document.getElementById("avatarStage");
@@ -81,6 +98,7 @@ function stageShow(personaId, speaking) {
       <span class="avatar-full-name">${PERSONA_NAMES[personaId] || ""}</span>
     `;
     bg = document.getElementById("stageAvatarBg");
+    applyPersonaColor(bg, personaId);
   }
   bg.classList.toggle("speaking", !!speaking);
 }
@@ -98,6 +116,7 @@ async function loadPersonas() {
   personaTabs.innerHTML = "";
   personas.forEach((p) => {
     PERSONA_NAMES[p.id] = p.display_name;
+    PERSONA_COLORS[p.id] = { color: p.color, background: p.background_color };
     const btn = document.createElement("button");
     btn.className = "persona-tab";
     btn.dataset.persona = p.id;
@@ -107,6 +126,7 @@ async function loadPersonas() {
       </span>
       <span class="tab-label">${p.display_name}</span>
     `;
+    applyPersonaColor(btn.querySelector(".avatar-icon-bg"), p.id);
     btn.addEventListener("click", () => addressPersona(p.id));
     personaTabs.appendChild(btn);
   });

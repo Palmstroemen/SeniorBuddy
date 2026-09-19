@@ -9,6 +9,7 @@ Modelle sind gepullt (siehe README.md).
 """
 import asyncio
 import logging
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from fastapi import Depends, FastAPI, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 import admin_auth
 import admin_settings
@@ -67,6 +68,8 @@ def _apply_persisted_admin_settings():
         satisfaction.CHECKIN_INTERVAL_DAYS = settings["satisfaction_interval_days"]
     if "auto_turns_enabled" in settings:
         autoturn.ENABLED = settings["auto_turns_enabled"]
+    if "personas" in settings:
+        config.apply_persona_overrides(settings["personas"])
 
 
 @asynccontextmanager
@@ -99,7 +102,10 @@ app.add_middleware(
 @app.get("/api/personas")
 def list_personas():
     return [
-        {"id": p.id, "display_name": p.display_name, "voice_id": p.voice_id}
+        {
+            "id": p.id, "display_name": p.display_name, "voice_id": p.voice_id,
+            "color": p.color, "background_color": p.background_color,
+        }
         for p in PERSONAS.values()
     ]
 
@@ -946,6 +952,117 @@ def set_persona_gender(persona_id: str, body: PersonaGenderUpdate):
     PERSONA_GENDER[persona_id] = body.gender  # sofort wirksam - PERSONAS liest denselben dict
     admin_settings.update("persona_gender", PERSONA_GENDER)
     return {"persona_id": persona_id, "gender": body.gender}
+
+
+# --- Persona-Designer: Personas per JSON-API anlegen/bearbeiten/loeschen,
+# ohne Code anzufassen. Reine JSON-API wie jede andere Fernwartungs-
+# Funktion - keine eigene Weboberflaeche in dieser Runde.
+
+class PersonaVariantIn(BaseModel):
+    display_name: str
+    system_prompt: str
+    voice_id: str = ""
+
+
+class PersonaFieldsIn(BaseModel):
+    model: str
+    always_loaded: bool = True
+    max_tokens: int = Field(400, gt=0, le=4096)
+    reengagement_tendency: float = Field(0.5, ge=0.0, le=1.0)
+    color: str
+    background_color: str
+    variants: dict[str, PersonaVariantIn]
+
+    @field_validator("variants")
+    @classmethod
+    def _all_three_genders(cls, v):
+        if set(v.keys()) != {"neutral", "weiblich", "maennlich"}:
+            raise ValueError("variants muss genau neutral/weiblich/maennlich enthalten")
+        return v
+
+    @field_validator("color", "background_color")
+    @classmethod
+    def _hex_color(cls, v):
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", v):
+            raise ValueError("muss ein Hex-Code sein, z.B. #7A5C90")
+        return v
+
+
+class PersonaCreateIn(PersonaFieldsIn):
+    id: str
+
+    @field_validator("id")
+    @classmethod
+    def _valid_id(cls, v):
+        if not re.fullmatch(r"[a-z][a-z0-9_]{1,31}", v):
+            raise ValueError("id muss ein Kleinbuchstaben-Slug sein (a-z0-9_, 2-32 Zeichen)")
+        return v
+
+
+def _persona_out(persona: "config.PersonaConfig") -> dict:
+    # is_builtin NUR hier berechnet, NICHT in PersonaConfig.to_dict()
+    # selbst - _persist_all_personas() nutzt weiterhin to_dict() direkt,
+    # dessen Roundtrip mit from_dict() (Konstruktor-Kwargs) sich sonst
+    # an einem unerwarteten is_builtin-Schluessel verschlucken wuerde.
+    return {**persona.to_dict(), "is_builtin": persona.id in config._BUILTIN_PERSONAS}
+
+
+async def _model_availability_warnings(model: str) -> list[str]:
+    if not await llm_client.is_model_available(model):
+        return [
+            f"Modell '{model}' ist auf diesem Server aktuell nicht in "
+            f"Ollama vorhanden - 'ollama pull {model}' ausfuehren."
+        ]
+    return []
+
+
+def _persist_all_personas():
+    admin_settings.update("personas", [p.to_dict() for p in PERSONAS.values()])
+
+
+@app.get("/admin/personas", dependencies=[Depends(admin_auth.require_admin)])
+def list_admin_personas():
+    return [_persona_out(p) for p in PERSONAS.values()]
+
+
+@app.get("/admin/personas/{persona_id}", dependencies=[Depends(admin_auth.require_admin)])
+def get_admin_persona(persona_id: str):
+    if persona_id not in PERSONAS:
+        raise HTTPException(404, "Persona nicht gefunden")
+    return _persona_out(PERSONAS[persona_id])
+
+
+@app.post(
+    "/admin/personas", status_code=201, dependencies=[Depends(admin_auth.require_admin)],
+)
+async def create_admin_persona(body: PersonaCreateIn):
+    if body.id in PERSONAS:
+        raise HTTPException(409, "Persona-ID existiert bereits")
+    config.apply_persona_overrides([body.model_dump()])
+    _persist_all_personas()
+    warnings = await _model_availability_warnings(body.model)
+    return {**_persona_out(PERSONAS[body.id]), "warnings": warnings}
+
+
+@app.put(
+    "/admin/personas/{persona_id}", dependencies=[Depends(admin_auth.require_admin)],
+)
+async def update_admin_persona(persona_id: str, body: PersonaFieldsIn):
+    if persona_id not in PERSONAS:
+        raise HTTPException(404, "Persona nicht gefunden")
+    config.apply_persona_overrides([{**body.model_dump(), "id": persona_id}])
+    _persist_all_personas()
+    warnings = await _model_availability_warnings(body.model)
+    return {**_persona_out(PERSONAS[persona_id]), "warnings": warnings}
+
+
+@app.delete("/admin/personas/{persona_id}", dependencies=[Depends(admin_auth.require_admin)])
+def delete_admin_persona(persona_id: str):
+    if persona_id not in PERSONAS:
+        raise HTTPException(404, "Persona nicht gefunden")
+    reverted = config.remove_persona_override(persona_id)
+    _persist_all_personas()
+    return {"persona_id": persona_id, "reverted_to_default": reverted}
 
 
 class NtfyTopicUpdate(BaseModel):

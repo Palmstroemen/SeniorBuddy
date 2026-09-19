@@ -30,10 +30,21 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   // Nur GET-Requests auf die Shell-Dateien aus dem Cache bedienen;
-  // API-/WebSocket-Aufrufe immer live ans Netzwerk.
+  // API-/WebSocket-Aufrufe immer live ans Netzwerk. /admin deckt sowohl
+  // die Fernwartungs-API (/admin/*) als auch admin.html selbst ab -
+  // beide sollen nie aus dem Cache, sondern immer live beantwortet
+  // werden (admin.html ruft /admin/* per fetch() aus einer von diesem
+  // Service Worker kontrollierten Seite auf, sobald einmal /index.html
+  // besucht wurde - ohne diesen Ausschluss waere das latent fuer
+  // veraltete Antworten anfaellig, sobald der Service Worker jemals
+  // GET-Antworten aktiv cached).
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
-  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws/")) return;
+  if (
+    url.pathname.startsWith("/api/")
+    || url.pathname.startsWith("/ws/")
+    || url.pathname.startsWith("/admin")
+  ) return;
 
   event.respondWith(
     caches.match(event.request).then((cached) => cached || fetch(event.request))

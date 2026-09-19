@@ -1,0 +1,236 @@
+/* ---------------------------------------------------------------
+   Persona-Designer (Admin-Oberflaeche) - nutzt die :root-Design-
+   Tokens aus style.css (Farben/Schriften/--radius), definiert hier
+   nur admin-eigenes Layout (Formular, Karten, Slider, Badges).
+   Bewusst eigene Klassennamen mit "admin-"-Praefix, damit nichts mit
+   style.css's seniorenseitigen Regeln kollidiert.
+------------------------------------------------------------------*/
+
+.admin-body {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 16px 48px;
+  font-size: 17px;              /* etwas kompakter als die Senioren-UI */
+}
+
+.admin-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 24px;
+}
+
+.admin-topbar h1 {
+  font-family: var(--font-display);
+  font-size: 22px;
+  margin: 0;
+}
+
+.admin-btn {
+  border: none;
+  border-radius: var(--radius);
+  font-family: var(--font-body);
+  font-size: 16px;
+  font-weight: 700;
+  padding: 10px 18px;
+  cursor: pointer;
+}
+
+.admin-btn-primary {
+  background: var(--sage);
+  color: var(--paper);
+}
+
+.admin-btn-secondary {
+  background: var(--sage-soft);
+  color: var(--ink);
+}
+
+.admin-btn-danger {
+  background: transparent;
+  color: #A33B3B;
+  border: 1px solid #A33B3B;
+}
+
+.admin-login {
+  max-width: 360px;
+  margin: 60px auto;
+}
+
+.admin-login form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-banner {
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 12px 0;
+  white-space: pre-line;
+  font-size: 15px;
+}
+
+.admin-banner-error {
+  background: #F6E4E4;
+  color: #7A2E2E;
+  border: 1px solid #E0B4B4;
+}
+
+.admin-banner-warning {
+  background: var(--sage-soft);
+  color: var(--ink);
+  border: 1px solid var(--gold);
+}
+
+.admin-list-actions {
+  margin-bottom: 16px;
+}
+
+.admin-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+}
+
+.admin-card-avatar {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+}
+
+.admin-card-avatar .avatar-shape {
+  width: 30px;
+  height: 30px;
+}
+
+.admin-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.admin-card-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 18px;
+}
+
+.admin-card-meta {
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.admin-badge {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-left: 8px;
+  background: var(--sage-soft);
+  color: var(--ink-soft);
+}
+
+.admin-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* --- Formular ------------------------------------------------------ */
+
+#personaForm {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+#personaForm label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-weight: 600;
+}
+
+#personaForm input[type="text"],
+#personaForm input[type="number"],
+#personaForm textarea {
+  font-family: var(--font-body);
+  font-size: 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 400;
+}
+
+#personaForm textarea {
+  resize: vertical;
+}
+
+.admin-readonly {
+  color: var(--ink-soft);
+  font-weight: 400;
+}
+
+.admin-checkbox-label {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+}
+
+.admin-range-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 400;
+}
+
+.admin-color-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.admin-color-preview {
+  width: 44px;
+  height: 44px;
+}
+
+.admin-form-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.variant-fieldset {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.variant-fieldset legend {
+  font-family: var(--font-display);
+  font-weight: 600;
+  padding: 0 6px;
+}
+
+.variant-fieldset label {
+  font-size: 15px;
+  font-weight: 600;
+}

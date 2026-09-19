@@ -5,6 +5,7 @@ Alles, was sich zwischen Testumgebung (2 Nutzer) und späterer
 Mehrbenutzer-Installation (Altenheim) unterscheiden könnte, ist
 hier gebündelt statt im Code verstreut.
 """
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +36,13 @@ class PersonaVariant:
     # Muss dort unter voices/<voice_id>.onnx liegen (speech-service/setup.sh).
     voice_id: str = ""
 
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict) -> "PersonaVariant":
+        return PersonaVariant(**d)
+
 
 @dataclass
 class PersonaConfig:
@@ -49,6 +57,13 @@ class PersonaConfig:
     # zu antworten und das Wort weiterzugeben - Charaktereigenschaft,
     # daher hier auf PersonaConfig statt der gegenderten PersonaVariant.
     reengagement_tendency: float = 0.5
+    # Hex-Farben fuer den Avatar (siehe client/js/app.js) - fuer die 4
+    # mitgelieferten Personas identisch zu den heute schon in
+    # client/css/style.css hart codierten Werten (dort unveraendert als
+    # Fallback); erst fuer per Persona-Designer-API neu angelegte
+    # Personas tatsaechlich noetig, da es fuer sie keine CSS-Regel gibt.
+    color: str = "#4A5D52"
+    background_color: str = "#E9EEEA"
 
     def _active_variant(self) -> PersonaVariant:
         gender = PERSONA_GENDER.get(self.id, "neutral")
@@ -66,6 +81,16 @@ class PersonaConfig:
     def voice_id(self) -> str:
         return self._active_variant().voice_id
 
+    def to_dict(self) -> dict:
+        d = dataclasses.asdict(self)
+        d["variants"] = {k: v.to_dict() for k, v in self.variants.items()}
+        return d
+
+    @staticmethod
+    def from_dict(d: dict) -> "PersonaConfig":
+        variants = {k: PersonaVariant.from_dict(v) for k, v in d["variants"].items()}
+        return PersonaConfig(**{**d, "variants": variants})
+
 
 PERSONAS: dict[str, PersonaConfig] = {
     "freundin": PersonaConfig(
@@ -73,6 +98,8 @@ PERSONAS: dict[str, PersonaConfig] = {
         model="qwen2.5:7b-instruct",
         always_loaded=True,
         reengagement_tendency=0.8,
+        color="#B5637E",
+        background_color="#F7E9ED",
         variants={
             "neutral": PersonaVariant(
                 display_name="Robin",
@@ -153,6 +180,8 @@ PERSONAS: dict[str, PersonaConfig] = {
         model="qwen2.5:7b-instruct",
         always_loaded=True,
         reengagement_tendency=0.6,
+        color="#B3671F",
+        background_color="#F6E9DA",
         variants={
             "neutral": PersonaVariant(
                 display_name="Alex",
@@ -227,6 +256,8 @@ PERSONAS: dict[str, PersonaConfig] = {
         always_loaded=True,  # bei 64-96GB RAM meist dauerhaft haltbar; sonst Scheduler nutzen
         max_tokens=600,
         reengagement_tendency=0.2,
+        color="#3C4F6E",
+        background_color="#E4E9F1",
         variants={
             "neutral": PersonaVariant(
                 display_name="Wallner",
@@ -301,6 +332,8 @@ PERSONAS: dict[str, PersonaConfig] = {
         model="qwen2.5:7b-instruct",
         always_loaded=True,
         reengagement_tendency=0.4,
+        color="#2E6B66",
+        background_color="#E3EFEE",
         variants={
             "neutral": PersonaVariant(
                 display_name="Toni",
@@ -396,6 +429,17 @@ PERSONAS: dict[str, PersonaConfig] = {
     ),
 }
 
+# Schnappschuss der 4 mitgelieferten Personas, direkt nach dem
+# obigen Literal, bevor irgendeine Aenderung passieren kann - eine
+# flache dict()-Kopie reicht (kein deepcopy noetig): nichts im
+# gesamten Code mutiert je ein PersonaConfig/PersonaVariant-Objekt in
+# seinen eigenen Feldern, jede Aenderung ersetzt den ganzen
+# Dict-Eintrag durch ein neues Objekt (siehe apply_persona_overrides
+# unten) - die urspruenglichen Objekte hier bleiben also unberuehrt.
+# Wird von remove_persona_override() genutzt, um eine bearbeitete
+# Standard-Persona wieder auf ihren Auslieferungszustand zu setzen.
+_BUILTIN_PERSONAS: dict[str, "PersonaConfig"] = dict(PERSONAS)
+
 # Pro Persona aktive Variante ("neutral" | "weiblich" | "maennlich").
 # Statisch pro Installation - Datei bearbeiten + Server neu starten, um
 # zu aendern. Default ueberall "neutral": Name statt gegenderter
@@ -417,3 +461,43 @@ FALLBACK_PERSONA = "freundin"
 # "Rechercheergebnisse (RAG-Kontext)" - Freundin/Reporter verweisen
 # Faktenfragen explizit an ihn, statt selbst zu recherchieren.
 KNOWLEDGE_PERSONAS = {"professor"}
+
+
+# --- Persona-Designer: Personas zur Laufzeit anlegen/bearbeiten/loeschen ---
+#
+# main.py importiert sowohl "import config" als auch "from config
+# import PERSONAS, ..." - der lose Name PERSONAS in main.py ist eine
+# EIGENE Bindung auf dasselbe Dict-Objekt, die eine Neuzuweisung wie
+# "config.PERSONAS = {...}" NICHT mitbekommen wuerde. Deshalb mutieren
+# beide Funktionen unten das bestehende PERSONAS-Objekt IN PLACE
+# (Eintrag setzen/loeschen), binden den Namen PERSONAS nie neu -
+# exakt das Muster, das PERSONA_GENDER schon heute korrekt befolgt.
+
+def apply_persona_overrides(overrides: list[dict]) -> None:
+    """Additiv/ueberschreibend - fuer Erstellen UND Bearbeiten (beides
+    ist "diesen Dict-Eintrag setzen"). Fuer Loeschen siehe
+    remove_persona_override() - Zusammenfuehren kann keine Entfernung
+    ausdruecken, das ist eine eigene, umgekehrte Operation."""
+    for d in overrides:
+        PERSONAS[d["id"]] = PersonaConfig.from_dict(d)
+        # setdefault, NICHT ueberschreiben: eine bereits gewaehlte
+        # Geschlechts-Form (ueber die bestehende persona-gender-Route)
+        # soll durch eine reine Inhalts-Bearbeitung nicht verloren gehen.
+        PERSONA_GENDER.setdefault(d["id"], "neutral")
+
+
+def remove_persona_override(persona_id: str) -> bool:
+    """Gibt True zurueck, wenn auf den mitgelieferten Standard
+    zurueckgesetzt wurde (persona_id war einer der 4 Basis-IDs - bleibt
+    IMMER erhalten, siehe main.py's FALLBACK_PERSONA/KNOWLEDGE_PERSONAS/
+    technikerin-Kopplungen), False, wenn eine eigene Persona komplett
+    entfernt wurde. PERSONA_GENDER bleibt beim Zuruecksetzen bewusst
+    unangetastet (eine gewaehlte Geschlechts-Form ist unabhaengig von
+    den Inhalten); bei echtem Entfernen wird der verwaiste Eintrag mit
+    aufgeraeumt."""
+    if persona_id in _BUILTIN_PERSONAS:
+        PERSONAS[persona_id] = _BUILTIN_PERSONAS[persona_id]
+        return True
+    del PERSONAS[persona_id]
+    PERSONA_GENDER.pop(persona_id, None)
+    return False
