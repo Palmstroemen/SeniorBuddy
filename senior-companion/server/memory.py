@@ -180,6 +180,39 @@ def recent_messages(user_id: str, persona: str, limit: int = 20) -> list[dict]:
     ]
 
 
+def recent_messages_for_summary(
+    user_id: str, persona: str, limit: int = 20, exclude_message_id: int | None = None,
+) -> list[dict]:
+    """Wie recent_messages(), aber fuer die Zusammenfassungs-Uebergabe
+    (handoff.py) zugeschnitten: schliesst JEDE jemals vertraulich
+    getaggte Nachricht aus (topic IS NOT NULL - auch ein laengst
+    geschlossenes Thema behaelt seinen topic-Wert, siehe close_topic()),
+    schliesst role='system'-Zeilen aus (keine fruehere Handoff-
+    Zusammenfassung soll ein zweites Mal, degradiert, verdichtet
+    werden) und loest KEIN Gruppenchat-Fan-out auf (links_to_id wird
+    ignoriert statt aufgeloest) - eine verlinkte Zeile gehoert nicht
+    zum EIGENEN Gespraech dieser Persona mit der Person, sondern ist
+    nur "mitgehoert"; ausserdem traegt sie ihren EIGENEN topic-Wert,
+    der hier nicht als massgeblich fuer die eigentliche Quelle gelten
+    darf. exclude_message_id: die aktuelle Uebergabe-Bitte selbst ist
+    zu diesem Zeitpunkt schon gespeichert (main.py speichert die
+    Nutzer-Nachricht, bevor maybe_spawn_handoff() laeuft) - ohne diesen
+    Ausschluss waere "recent_messages_for_summary()" nie leer, selbst
+    wenn ALLES Vorherige vertraulich war, weil die Bitte selbst
+    (unvertraulich) immer mitzaehlen wuerde."""
+    with get_db(user_id) as db:
+        rows = db.execute(
+            "SELECT id, role, content, ts FROM messages "
+            "WHERE persona=? AND links_to_id IS NULL AND topic IS NULL "
+            "AND role != 'system' AND id != ? ORDER BY id DESC LIMIT ?",
+            (persona, exclude_message_id or -1, limit),
+        ).fetchall()
+    return [
+        {"role": r["role"], "content": r["content"], "ts": r["ts"]}
+        for r in reversed(rows)
+    ]
+
+
 def usage_stats(
     user_id: str, session_gap_minutes: int = 20, persona: str | None = None
 ) -> dict:

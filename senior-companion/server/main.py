@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 from fastapi import Depends, FastAPI, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +25,7 @@ import analysis
 import autoturn
 import config
 import director
+import handoff
 import honeypot
 import knowledge
 import llm_client
@@ -202,6 +204,145 @@ async def text_to_speech(body: TTSRequest):
 
 
 # ---------------------------------------------------------------------
+# Zusammenfassungs-Uebergabe: siehe handoff.py fuer Erkennung/Prompts.
+# Bewusst additiv fuer BEIDE Chat-Endpunkte (chat()/run_turn()) nutzbar
+# - keine gleichzeitige Anwesenheit noetig, anders als der Gruppenchat.
+# ---------------------------------------------------------------------
+
+@dataclass
+class HandoffOutcome:
+    system_context_line: str | None = None
+    target_id: str | None = None
+    exclude_message_id: int | None = None
+
+
+async def _run_handoff_summary(
+    user_id: str, source_persona_id: str, target_persona_id: str,
+    exclude_message_id: int | None,
+):
+    """Hintergrund-Coroutine: verdichtet das bisherige, nicht
+    vertrauliche Gespraech und hinterlegt es als role='system'-Zeile
+    bei der Ziel-Persona - sichtbar fuer sie ab ihrem naechsten Zug
+    ueber die unveraenderte recent_messages()-Pipeline, ganz ohne neue
+    Injektions-Logik auf der Lesenseite. Registrierung/Deregistrierung
+    bei priority.py passieren bewusst NICHT hier drin, sondern am
+    Aufrufort (spawn_handoff_task) - siehe Kommentar dort fuer die
+    Begruendung (ein try/finally HIER wuerde nicht zuverlaessig
+    laufen, wenn die Task noch vor ihrem allerersten Event-Loop-Tick
+    abgebrochen wird)."""
+    try:
+        history = memory.recent_messages_for_summary(
+            user_id, source_persona_id, exclude_message_id=exclude_message_id,
+        )
+        conversation_text = "\n".join(f"{m['role']}: {m['content']}" for m in history)
+        summary = await llm_client.generate(
+            config.PERSONAS[source_persona_id].model,  # bewusst das
+            # Modell der Quell-Persona, nicht wie sentiment_job.py ein
+            # festes kleines Modell - Verdichten braucht mehr Faehigkeit
+            # als Stimmungs-Klassifikation; laeuft nicht-blockierend im
+            # Hintergrund, daher unproblematisch, auch wenn das
+            # gewaehlte Modell (z.B. Wallners) langsamer ist.
+            handoff.SUMMARY_SYSTEM_PROMPT,
+            [{"role": "user", "content": conversation_text}],
+            max_tokens=200,
+        )
+        source_display_name = config.PERSONAS[source_persona_id].display_name
+        memory.add_message(
+            user_id, target_persona_id, "system",
+            f"[Von {source_display_name} erzaehlt]: {summary}",
+        )
+    except asyncio.CancelledError:
+        log.info("Zusammenfassungs-Uebergabe abgebrochen (Senior-Anfrage hat Vorrang).")
+        raise
+    except Exception:
+        # Best-effort im Hintergrund - ein Modell-Ausfall soll nicht
+        # stillschweigend verschwinden (Python wuerde sonst nur intern
+        # "Task exception was never retrieved" loggen).
+        log.warning("Zusammenfassungs-Uebergabe fehlgeschlagen.", exc_info=True)
+
+
+def prepare_handoff(
+    user_id: str, persona_id: str, user_text: str, exclude_message_id: int | None = None,
+) -> HandoffOutcome:
+    """Nur Erkennung + die Prompt-Zeile fuer den SICHTBAREN Zug -
+    spawnt bewusst NOCH KEINE Hintergrund-Task (siehe
+    spawn_handoff_task() weiter unten fuer den Grund und den
+    korrekten Aufrufzeitpunkt). exclude_message_id: main.py speichert
+    die aktuelle Nutzer-Nachricht bereits, bevor diese Funktion
+    aufgerufen wird - ohne ihre eigene id hier auszuschliessen, wuerde
+    die Uebergabe-Bitte selbst (unvertraulich) immer als "etwas zum
+    Zusammenfassen" zaehlen, selbst wenn ALLES Vorherige vertraulich
+    war."""
+    candidates = {pid: p.display_name for pid, p in PERSONAS.items()}
+    target_id = handoff.detect_handoff_target(user_text, candidates, persona_id)
+    if target_id is None:
+        return HandoffOutcome()
+
+    target_name = PERSONAS[target_id].display_name
+    summarizable = memory.recent_messages_for_summary(
+        user_id, persona_id, exclude_message_id=exclude_message_id,
+    )
+    if not summarizable:
+        return HandoffOutcome(
+            system_context_line=handoff.CANNOT_SHARE_PROMPT.format(target_name=target_name),
+        )
+
+    return HandoffOutcome(
+        system_context_line=handoff.ACK_HANDOFF_PROMPT.format(target_name=target_name),
+        target_id=target_id,
+        exclude_message_id=exclude_message_id,
+    )
+
+
+def spawn_handoff_task(
+    user_id: str, persona_id: str, outcome: HandoffOutcome,
+) -> asyncio.Task | None:
+    """Erst NACHDEM der eigene senior_stream_started()/finished()-
+    Block DIESES Zugs bereits durchlaufen ist aufrufen (siehe die
+    beiden Einfuegepunkte in chat()/run_turn()) - nicht vorher und
+    nicht waehrenddessen. Grund (per echtem Rauchtest entdeckt, nicht
+    nur angenommen): senior_stream_started() bricht ALLE aktuell
+    registrierten Low-Priority-Tasks ab, ausnahmslos. Wuerde diese
+    Task VOR dem eigenen senior_stream_started()-Aufruf desselben Zugs
+    erzeugt/registriert, wuerde genau DIESER Aufruf sie sofort wieder
+    abbrechen, noch bevor sie ihren allerersten Event-Loop-Tick
+    bekommen hat - die Uebergabe waere in der Praxis nie fertig
+    geworden, obwohl `outcome.system_context_line` (siehe
+    prepare_handoff) korrekt in die sichtbare Antwort eingeblendet
+    wurde. Nach dem eigenen senior_stream_finished() ist
+    senior_stream_active() wieder korrekt (nur noch True, wenn
+    TATSAECHLICH ein ANDERER, unabhaengiger Senior-Zug parallel
+    laeuft) - erst dann darf registriert werden."""
+    if outcome.target_id is None:
+        return None
+
+    task = asyncio.create_task(
+        _run_handoff_summary(
+            user_id, persona_id, outcome.target_id, outcome.exclude_message_id,
+        ),
+    )
+    # Registrierung SYNCHRON hier, direkt nach create_task, OHNE await
+    # dazwischen - schliesst das Race-Fenster vollstaendig (die Task
+    # kann ihren eigenen ersten Schritt erst beim naechsten Event-Loop-
+    # Tick ausfuehren; wuerde sie sich stattdessen selbst registrieren,
+    # bliebe sie bis dahin ungeschuetzt vor einem ANDEREN, parallelen
+    # senior_stream_started()).
+    #
+    # Deregistrierung ueber add_done_callback statt ueber ein
+    # try/finally INNERHALB der Task: wird eine Task abgebrochen, noch
+    # bevor sie ihren allerersten Event-Loop-Tick bekommen hat, fuehrt
+    # Python den Coroutine-Koerper ueberhaupt nicht aus - ein finally
+    # DARIN wuerde dann NIE laufen und die Task bliebe fuer immer in
+    # _low_priority_tasks haengen (per echtem Test entdeckt, nicht nur
+    # angenommen). add_done_callback feuert dagegen garantiert bei
+    # JEDEM Abschluss-Zustand (erfolgreich, Exception, oder abgebrochen
+    # vor dem ersten Schritt).
+    priority.register_low_priority_task(task)
+    task.add_done_callback(priority.unregister_low_priority_task)
+    return task
+
+
+# ---------------------------------------------------------------------
 # Chat (WebSocket, damit Antworten Wort-fuer-Wort gestreamt werden koennen)
 # ---------------------------------------------------------------------
 
@@ -237,7 +378,7 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
             # ggf. aktiven Thema getaggt werden kann.
             secrecy_outcome = secrecy.handle_turn(user_id, persona.id, user_text)
 
-            memory.add_message(
+            user_message_id = memory.add_message(
                 user_id, persona.id, "user", user_text,
                 topic=secrecy_outcome.topic_for_tagging,
             )
@@ -317,6 +458,14 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
             for line in secrecy_outcome.system_context:
                 chat_messages.append({"role": "system", "content": line})
 
+            handoff_outcome = prepare_handoff(
+                user_id, persona.id, user_text, exclude_message_id=user_message_id,
+            )
+            if handoff_outcome.system_context_line:
+                chat_messages.append({
+                    "role": "system", "content": handoff_outcome.system_context_line,
+                })
+
             full_response = ""
             priority.senior_stream_started()
             try:
@@ -333,6 +482,7 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
                 user_id, persona.id, "assistant", full_response,
                 topic=secrecy_outcome.topic_for_tagging,
             )
+            spawn_handoff_task(user_id, persona.id, handoff_outcome)
             await websocket.send_json({"type": "done"})
 
     except WebSocketDisconnect:
@@ -360,7 +510,7 @@ async def run_turn(
 
     secrecy_outcome = secrecy.handle_turn(user_id, persona.id, user_text)
 
-    memory.add_message(
+    user_message_id = memory.add_message(
         user_id, persona.id, "user", user_text,
         topic=secrecy_outcome.topic_for_tagging,
     )
@@ -434,6 +584,14 @@ async def run_turn(
     for line in secrecy_outcome.system_context:
         chat_messages.append({"role": "system", "content": line})
 
+    handoff_outcome = prepare_handoff(
+        user_id, persona.id, user_text, exclude_message_id=user_message_id,
+    )
+    if handoff_outcome.system_context_line:
+        chat_messages.append({
+            "role": "system", "content": handoff_outcome.system_context_line,
+        })
+
     # Nur einblenden, wenn niemand ausdruecklich angesprochen wurde UND
     # mehrere Personas anwesend sind - bei nur einer anwesenden Person
     # (heutiger Normalfall) bleibt der Prompt identisch zu /ws/chat.
@@ -470,6 +628,7 @@ async def run_turn(
             if other_id != persona.id:
                 memory.add_linked_message(user_id, other_id, "assistant", master_id)
 
+    spawn_handoff_task(user_id, persona.id, handoff_outcome)
     await websocket.send_json({"type": "done", "persona": persona.id})
 
 

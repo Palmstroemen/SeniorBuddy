@@ -703,3 +703,70 @@ def test_tts_endpoint_falls_back_to_default_persona_for_unknown_id(monkeypatch):
 
     assert r.status_code == 200
     assert captured["voice"] == main.PERSONAS[main.FALLBACK_PERSONA].voice_id
+
+
+# --- Zusammenfassungs-Uebergabe (handoff.py) -----------------------------
+
+def test_handoff_request_spawns_summary_task_and_acknowledges(monkeypatch):
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Klar, das richte ich Wallner aus!"
+
+    async def fake_generate(model, system_prompt, messages, max_tokens=400):
+        return "Kurze Zusammenfassung."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(main.llm_client, "generate", fake_generate)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/chat/handoff_api_user1/freundin") as ws:
+            ws.send_text("Robin, erzaehl das mal Wallner")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert any("Wallner" in m["content"] for m in injected)
+
+
+def test_handoff_request_when_everything_confidential_uses_cannot_share_prompt(monkeypatch):
+    memory.add_message(
+        "handoff_api_user2", "freundin", "user", "Ein Geheimnis ueber Heinrich.",
+        topic="Heinrich",
+    )
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Das bleibt lieber unter uns."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/chat/handoff_api_user2/freundin") as ws:
+            ws.send_text("Robin, erzaehl das mal Wallner")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert any("nicht weitergeben" in m["content"] for m in injected)
+
+
+def test_no_handoff_detected_leaves_chat_messages_unchanged(monkeypatch):
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Alles gut bei mir!"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/chat/handoff_api_user3/freundin") as ws:
+            ws.send_text("Wie geht's dir heute?")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert not any("weitergeben" in m["content"] for m in injected)

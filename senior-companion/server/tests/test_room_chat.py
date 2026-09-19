@@ -452,3 +452,77 @@ def test_room_chat_wrapup_fires_once_then_room_goes_quiet(monkeypatch, _fast_aut
                     extra_dones += 1
 
     assert extra_dones == 0
+
+
+# --- Zusammenfassungs-Uebergabe (handoff.py) - gespiegelt aus test_api.py,
+# nicht redundant: chat()/run_turn() bleiben bewusst dupliziert, das sind
+# die Tests, die ein Auseinanderlaufen der beiden Kopien auffangen wuerden.
+
+def test_room_chat_handoff_request_spawns_summary_task_and_acknowledges(monkeypatch):
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Klar, das richte ich Wallner aus!"
+
+    async def fake_generate(model, system_prompt, messages, max_tokens=400):
+        return "Kurze Zusammenfassung."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(main.llm_client, "generate", fake_generate)
+    room.touch("handoff_room_user1", "freundin")
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/handoff_room_user1") as ws:
+            ws.send_text("Robin, erzaehl das mal Wallner")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert any("Wallner" in m["content"] for m in injected)
+
+
+def test_room_chat_handoff_request_when_everything_confidential_uses_cannot_share_prompt(
+    monkeypatch,
+):
+    memory.add_message(
+        "handoff_room_user2", "freundin", "user", "Ein Geheimnis ueber Heinrich.",
+        topic="Heinrich",
+    )
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Das bleibt lieber unter uns."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    room.touch("handoff_room_user2", "freundin")
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/handoff_room_user2") as ws:
+            ws.send_text("Robin, erzaehl das mal Wallner")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert any("nicht weitergeben" in m["content"] for m in injected)
+
+
+def test_room_chat_no_handoff_detected_leaves_chat_messages_unchanged(monkeypatch):
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Alles gut bei mir!"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    room.touch("handoff_room_user3", "freundin")
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/handoff_room_user3") as ws:
+            ws.send_text("Wie geht's dir heute?")
+            while ws.receive_json()["type"] != "done":
+                pass
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert not any("weitergeben" in m["content"] for m in injected)

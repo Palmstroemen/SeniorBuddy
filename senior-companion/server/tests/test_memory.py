@@ -919,3 +919,74 @@ def test_has_pending_secrecy_interaction_false_for_other_persona():
 
 def test_has_pending_secrecy_interaction_false_when_nothing_open():
     assert memory.has_pending_secrecy_interaction("pending_secrecy_user5", "freundin") is False
+
+
+def test_recent_messages_for_summary_returns_direct_messages_in_order():
+    memory.add_message("summary_user1", "freundin", "user", "Hallo Robin")
+    memory.add_message("summary_user1", "freundin", "assistant", "Hallo!")
+    rows = memory.recent_messages_for_summary("summary_user1", "freundin")
+    assert [r["content"] for r in rows] == ["Hallo Robin", "Hallo!"]
+
+
+def test_recent_messages_for_summary_excludes_topic_tagged_messages():
+    memory.add_message("summary_user2", "freundin", "user", "Normal.")
+    memory.add_message(
+        "summary_user2", "freundin", "user", "Ein Geheimnis ueber Heinrich.",
+        topic="Heinrich",
+    )
+    rows = memory.recent_messages_for_summary("summary_user2", "freundin")
+    assert len(rows) == 1
+    assert rows[0]["content"] == "Normal."
+
+
+def test_recent_messages_for_summary_excludes_closed_but_tagged_messages():
+    """Sicherheitskritischster Test dieser Runde: ein bereits
+    geschlossenes Thema behaelt seinen topic-Wert auf der Nachricht
+    (close_topic() loescht ihn nicht) - muss trotzdem ausgeschlossen
+    bleiben."""
+    memory.open_pending_topic("summary_user3", "freundin")
+    memory.capture_topic_label("summary_user3", "freundin", "Heinrich")
+    memory.add_message(
+        "summary_user3", "freundin", "user", "Details zu Heinrich.",
+        topic="Heinrich",
+    )
+    memory.close_topic("summary_user3", "freundin", "Heinrich")
+
+    rows = memory.recent_messages_for_summary("summary_user3", "freundin")
+    assert not any("Heinrich" in r["content"] for r in rows)
+
+
+def test_recent_messages_for_summary_excludes_linked_fanout_rows():
+    master_id = memory.add_message("summary_user4", "freundin", "assistant", "Wetterbericht.")
+    memory.add_linked_message("summary_user4", "professor", "assistant", master_id)
+
+    # professor hat es per Fan-out nur "mitgehoert", nicht selbst gesagt.
+    summary_source = memory.recent_messages_for_summary("summary_user4", "professor")
+    assert summary_source == []
+    # recent_messages() (normale Lese-Pipeline) sieht es dagegen weiterhin.
+    assert len(memory.recent_messages("summary_user4", "professor")) == 1
+
+
+def test_recent_messages_for_summary_excludes_system_rows():
+    memory.add_message("summary_user5", "freundin", "user", "Hallo.")
+    memory.add_message(
+        "summary_user5", "freundin", "system", "[Von Wallner erzaehlt]: Frueherer Kontext.",
+    )
+    rows = memory.recent_messages_for_summary("summary_user5", "freundin")
+    assert len(rows) == 1
+    assert rows[0]["content"] == "Hallo."
+
+
+def test_recent_messages_for_summary_respects_limit():
+    for i in range(5):
+        memory.add_message("summary_user6", "freundin", "user", f"Nachricht {i}")
+    rows = memory.recent_messages_for_summary("summary_user6", "freundin", limit=2)
+    assert len(rows) == 2
+    assert rows[-1]["content"] == "Nachricht 4"
+
+
+def test_recent_messages_for_summary_is_per_persona():
+    memory.add_message("summary_user7", "freundin", "user", "Nur fuer Robin.")
+    memory.add_message("summary_user7", "professor", "user", "Nur fuer Wallner.")
+    rows = memory.recent_messages_for_summary("summary_user7", "freundin")
+    assert [r["content"] for r in rows] == ["Nur fuer Robin."]
