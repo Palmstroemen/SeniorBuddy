@@ -35,6 +35,20 @@ class PersonaVariant:
     # relevant, wenn TTS auf dem Server laeuft (siehe speech-service/).
     # Muss dort unter voices/<voice_id>.onnx liegen (speech-service/setup.sh).
     voice_id: str = ""
+    # Gesichts-Bauteile fuer den Strichgesicht-Avatar (siehe
+    # client/js/app.js's avatarSvg(), Bauteile aus
+    # client/assets/toon-head-faces.json, Werte = toon-head-Varianten-
+    # Schluessel). face_hairstyle ist ein kuratierter Preset-Schluessel
+    # (nicht der rohe toon-head hair/rearHair-Wert), face_beard="" heisst
+    # kein Bart. Alle mit Default, damit alte, vor dieser Runde
+    # gespeicherte Personas (server/data/admin_settings.json) beim Laden
+    # nicht an einem fehlenden Pflichtfeld scheitern - gleiches Prinzip
+    # wie voice_id oben.
+    face_eyebrows: str = "neutral"
+    face_eyes: str = "happy"
+    face_mouth: str = "smile"
+    face_hairstyle: str = "kurz"
+    face_beard: str = ""
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -81,6 +95,26 @@ class PersonaConfig:
     def voice_id(self) -> str:
         return self._active_variant().voice_id
 
+    @property
+    def face_eyebrows(self) -> str:
+        return self._active_variant().face_eyebrows
+
+    @property
+    def face_eyes(self) -> str:
+        return self._active_variant().face_eyes
+
+    @property
+    def face_mouth(self) -> str:
+        return self._active_variant().face_mouth
+
+    @property
+    def face_hairstyle(self) -> str:
+        return self._active_variant().face_hairstyle
+
+    @property
+    def face_beard(self) -> str:
+        return self._active_variant().face_beard
+
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
         d["variants"] = {k: v.to_dict() for k, v in self.variants.items()}
@@ -104,6 +138,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "neutral": PersonaVariant(
                 display_name="Robin",
                 voice_id="de_DE-thorsten-low",
+                face_eyes="happy", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="spiky", face_beard="",
                 system_prompt=(
                     "Du bist Robin, eine warmherzige, tratschfreudige "
                     "Gespraechsperson im Kontakt mit einer aelteren Person. "
@@ -128,6 +164,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "weiblich": PersonaVariant(
                 display_name="Robin (die Freundin)",
                 voice_id="de_DE-kerstin-low",
+                face_eyes="happy", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="lang_gewellt", face_beard="",
                 system_prompt=(
                     "Du bist Robin, eine warmherzige, tratschfreudige "
                     "Freundin im Gespraech mit einer aelteren Person. Du "
@@ -152,6 +190,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "maennlich": PersonaVariant(
                 display_name="Robin (der Freund)",
                 voice_id="de_DE-thorsten-low",
+                face_eyes="happy", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="spiky", face_beard="",
                 system_prompt=(
                     "Du bist Robin, ein warmherziger, tratschfreudiger "
                     "Freund im Gespraech mit einer aelteren Person. Du "
@@ -186,6 +226,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "neutral": PersonaVariant(
                 display_name="Alex",
                 voice_id="de_DE-karlsson-low",
+                face_eyes="wide", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="kurz_gescheitelt", face_beard="",
                 system_prompt=(
                     "Du bist Alex, eine geduldige, einfuehlsame "
                     "Gespraechsperson, die gut zuhoert und die "
@@ -208,6 +250,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "weiblich": PersonaVariant(
                 display_name="Alex (die Lebensreporterin)",
                 voice_id="de_DE-ramona-low",
+                face_eyes="wide", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="dutt", face_beard="",
                 system_prompt=(
                     "Du bist Alex, eine geduldige, einfuehlsame "
                     "Zuhoererin, die die Lebensgeschichte der Person "
@@ -230,6 +274,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "maennlich": PersonaVariant(
                 display_name="Alex (der Lebensreporter)",
                 voice_id="de_DE-karlsson-low",
+                face_eyes="wide", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="kurz_gescheitelt", face_beard="chin",
                 system_prompt=(
                     "Du bist Alex, ein geduldiger, einfuehlsamer Zuhoerer, "
                     "der die Lebensgeschichte der Person sammelt. Du "
@@ -262,6 +308,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "neutral": PersonaVariant(
                 display_name="Wallner",
                 voice_id="de_DE-pavoque-low",
+                face_eyes="humble", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="kurz_gescheitelt", face_beard="fullBeard",
                 system_prompt=(
                     "Du bist Wallner, eine bedaechtige, freundliche "
                     "pensionierte Fachperson mit langjaehriger "
@@ -283,6 +331,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "weiblich": PersonaVariant(
                 display_name="Professorin Wallner",
                 voice_id="de_DE-kerstin-low",
+                face_eyes="humble", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="lang_glatt", face_beard="",
                 system_prompt=(
                     "Du bist Professorin Wallner, eine bedaechtige, "
                     "freundliche pensionierte Universitaetsprofessorin im "
@@ -303,6 +353,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "maennlich": PersonaVariant(
                 display_name="Professor Wallner",
                 voice_id="de_DE-pavoque-low",
+                face_eyes="humble", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="kurz_gescheitelt", face_beard="fullBeard",
                 system_prompt=(
                     "Du bist Professor Wallner, ein bedaechtiger, "
                     "freundlicher pensionierter Universitaetsprofessor im "
@@ -338,6 +390,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "neutral": PersonaVariant(
                 display_name="Toni",
                 voice_id="de_DE-thorsten-low",
+                face_eyes="bow", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="kurz", face_beard="",
                 system_prompt=(
                     "Du bist Toni, eine ruhige, kompetente Fachperson fuer "
                     "Technik im Gespraech mit einer aelteren Person. Du "
@@ -368,6 +422,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "weiblich": PersonaVariant(
                 display_name="Toni (die Technikerin)",
                 voice_id="de_DE-ramona-low",
+                face_eyes="bow", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="kurz", face_beard="",
                 system_prompt=(
                     "Du bist Toni, eine ruhige, kompetente Technikerin im "
                     "Gespraech mit einer aelteren Person. Du bist "
@@ -398,6 +454,8 @@ PERSONAS: dict[str, PersonaConfig] = {
             "maennlich": PersonaVariant(
                 display_name="Toni (der Techniker)",
                 voice_id="de_DE-thorsten-low",
+                face_eyes="bow", face_eyebrows="neutral", face_mouth="smile",
+                face_hairstyle="kurz", face_beard="chinMoustache",
                 system_prompt=(
                     "Du bist Toni, ein ruhiger, kompetenter Techniker im "
                     "Gespraech mit einer aelteren Person. Du bist "

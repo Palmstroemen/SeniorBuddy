@@ -9,7 +9,31 @@ const FIELD_LABELS = {
   id: "ID", model: "Modell", always_loaded: "Immer geladen", max_tokens: "Max. Tokens",
   reengagement_tendency: "Neigung", color: "Farbe", background_color: "Hintergrundfarbe",
   variants: "Geschlechts-Varianten", display_name: "Anzeigename", system_prompt: "Systemprompt",
-  voice_id: "Stimme (voice_id)",
+  voice_id: "Stimme (voice_id)", face_eyebrows: "Augenbrauen", face_eyes: "Augen",
+  face_mouth: "Mund", face_hairstyle: "Frisur", face_beard: "Bart",
+};
+
+// Deutsche Beschriftungen fuer die Gesichts-Dropdowns - reine
+// UI-Anzeige, gespeichert wird immer der lateinische toon-head-
+// Schluessel bzw. der Frisur-Preset-Schluessel (siehe HAIRSTYLE_PRESETS).
+const FACE_OPTION_LABELS = {
+  face_eyebrows: {
+    angry: "Zornig", happy: "Fröhlich", neutral: "Neutral", raised: "Hochgezogen", sad: "Traurig",
+  },
+  face_eyes: {
+    bow: "Lachend (zu)", happy: "Fröhlich", humble: "Bescheiden", wide: "Aufmerksam", wink: "Zwinkernd",
+  },
+  face_mouth: {
+    agape: "Erstaunt", angry: "Zornig", laugh: "Lachend", sad: "Traurig", smile: "Lächelnd",
+  },
+  face_hairstyle: {
+    kurz: "Kurz", kurz_gescheitelt: "Kurz, gescheitelt", spiky: "Kurz, wuschelig",
+    dutt: "Dutt", lang_glatt: "Lang, glatt", lang_gewellt: "Lang, gewellt",
+  },
+  face_beard: {
+    "": "Kein Bart", chin: "Kinnbart", chinMoustache: "Kinnbart mit Schnurrbart",
+    fullBeard: "Vollbart", longBeard: "Langer Bart", moustacheTwirl: "Gezwirbelter Schnurrbart",
+  },
 };
 
 let personas = [];       // zuletzt geladene Liste, im Speicher gehalten
@@ -44,21 +68,83 @@ const variantsContainer = document.getElementById("variantsContainer");
 const voiceSuggestions = document.getElementById("voiceSuggestions");
 const cancelFormBtn = document.getElementById("cancelFormBtn");
 
-// --- Avatare: bewusst dupliziert aus client/js/app.js (~15 Zeilen,
-// kein Modul-System vorhanden) - bei Aenderungen an der Avatar-Form
-// beide Kopien synchron halten. ---------------------------------------
+// --- Avatare: bewusst dupliziert aus client/js/app.js (kein
+// Modul-System vorhanden) - bei Aenderungen an der Avatar-Form beide
+// Kopien synchron halten. Die zugrundeliegenden JSON-Daten
+// (FACE_DATA) werden dagegen NICHT dupliziert, sondern von beiden
+// Dateien unabhaengig per fetch() geladen. ------------------------------
 
-function avatarSvg(personaId, style) {
-  const body = style === "flat"
-    ? `<circle cx="50" cy="26" r="15"/>
-       <path d="M30,96 Q28,42 50,40 Q72,42 70,96 Z"/>`
-    : `<circle cx="50" cy="26" r="15"/>
-       <line x1="50" y1="41" x2="50" y2="72"/>
-       <line x1="50" y1="52" x2="30" y2="68"/>
-       <line x1="50" y1="52" x2="70" y2="68"/>
-       <line x1="50" y1="72" x2="34" y2="96"/>
-       <line x1="50" y1="72" x2="66" y2="96"/>`;
-  return `<svg class="avatar-shape stick" data-persona="${personaId}" viewBox="0 0 100 100">${body}</svg>`;
+let FACE_DATA = null;
+async function loadFaceData() {
+  if (!FACE_DATA) {
+    FACE_DATA = await (await fetch("assets/toon-head-faces.json")).json();
+  }
+  return FACE_DATA;
+}
+
+const HAIRSTYLE_PRESETS = {
+  kurz: { hair: "undercut", rearHair: "neckHigh" },
+  kurz_gescheitelt: { hair: "sideComed", rearHair: "neckHigh" },
+  spiky: { hair: "spiky", rearHair: "neckHigh" },
+  dutt: { hair: "bun", rearHair: "shoulderHigh" },
+  lang_glatt: { hair: "sideComed", rearHair: "longStraight" },
+  lang_gewellt: { hair: "bun", rearHair: "longWavy" },
+};
+
+function faceAttrValue(v, colorMap) {
+  if (v && typeof v === "object" && v.type === "color") return colorMap[v.name];
+  return v;
+}
+
+function faceAttrs(attributes, colorMap) {
+  if (!attributes) return "";
+  return Object.entries(attributes)
+    .map(([k, v]) => ` ${k}="${faceAttrValue(v, colorMap)}"`)
+    .join("");
+}
+
+function renderFaceElements(elements, colorMap) {
+  return (elements || [])
+    .map((el) => {
+      const attrs = faceAttrs(el.attributes, colorMap);
+      if (el.children) {
+        return `<${el.name}${attrs}>${renderFaceElements(el.children, colorMap)}</${el.name}>`;
+      }
+      return `<${el.name}${attrs}/>`;
+    })
+    .join("");
+}
+
+function faceComponentGroup(faceData, componentName, variantKey, colorMap) {
+  const component = faceData.components[componentName];
+  const variant = component && component.variants[variantKey];
+  if (!variant) return "";
+  const canvasEl = faceData.canvas.elements.find((e) => e.name === componentName);
+  const transform = canvasEl ? canvasEl.attributes.transform : "";
+  return `<g transform="${transform}">${renderFaceElements(variant.elements, colorMap)}</g>`;
+}
+
+function noseSvg(color) {
+  return `<path d="M384 380 Q392 420 378 438" stroke="${color}" fill="none" stroke-width="6" stroke-linecap="round"/>`;
+}
+
+function avatarSvg(personaId, faceData, face) {
+  if (!faceData || !face) {
+    return `<svg class="avatar-shape" data-persona="${personaId}" viewBox="0 0 768 768"></svg>`;
+  }
+  const preset = HAIRSTYLE_PRESETS[face.face_hairstyle] || HAIRSTYLE_PRESETS.kurz;
+  const colorMap = { stroke: face.color, hair: "var(--ink)", skin: "none" };
+  const parts = [
+    faceComponentGroup(faceData, "rearHair", preset.rearHair, colorMap),
+    faceComponentGroup(faceData, "head", "head", colorMap),
+    faceComponentGroup(faceData, "eyebrows", face.face_eyebrows, colorMap),
+    faceComponentGroup(faceData, "eyes", face.face_eyes, colorMap),
+    faceComponentGroup(faceData, "mouth", face.face_mouth, colorMap),
+    noseSvg(face.color),
+    faceComponentGroup(faceData, "hair", preset.hair, colorMap),
+    face.face_beard ? faceComponentGroup(faceData, "beard", face.face_beard, colorMap) : "",
+  ];
+  return `<svg class="avatar-shape" data-persona="${personaId}" viewBox="0 0 768 768">${parts.join("")}</svg>`;
 }
 
 // Anders als app.js's applyPersonaColor (die eine Lookup-Tabelle nach
@@ -159,6 +245,7 @@ logoutBtn.addEventListener("click", () => {
 });
 
 async function init() {
+  await loadFaceData();
   const stored = localStorage.getItem(TOKEN_KEY);
   if (stored) {
     await tryLogin(stored);
@@ -189,7 +276,7 @@ function renderCards() {
 
     const avatarWrap = document.createElement("span");
     avatarWrap.className = "avatar-shape-bg admin-card-avatar";
-    avatarWrap.innerHTML = avatarSvg(p.id, "stick");
+    avatarWrap.innerHTML = avatarSvg(p.id, FACE_DATA, { ...p.variants.neutral, color: p.color });
     applyPersonaColorAdmin(avatarWrap, p.color, p.background_color);
     card.appendChild(avatarWrap);
 
@@ -243,6 +330,17 @@ cancelFormBtn.addEventListener("click", () => showListView());
 
 // --- Formular-Ansicht ------------------------------------------------
 
+const FACE_FIELDS = ["face_eyebrows", "face_eyes", "face_mouth", "face_hairstyle", "face_beard"];
+
+function faceSelectHTML(field, value) {
+  const options = Object.entries(FACE_OPTION_LABELS[field])
+    .map(([v, label]) => `<option value="${v}"${v === value ? " selected" : ""}>${label}</option>`)
+    .join("");
+  return `<label>${FIELD_LABELS[field]}
+    <select name="${field}">${options}</select>
+  </label>`;
+}
+
 function variantFieldsetHTML(genderKey, variant) {
   return `
     <fieldset class="variant-fieldset" data-gender="${genderKey}">
@@ -256,10 +354,16 @@ function variantFieldsetHTML(genderKey, variant) {
       <label>Stimme (voice_id)
         <input type="text" name="voice_id" list="voiceSuggestions" value="${escapeHtml(variant.voice_id)}">
       </label>
+      <span class="avatar-shape-bg variant-face-preview"></span>
+      ${FACE_FIELDS.map((f) => faceSelectHTML(f, variant[f])).join("")}
     </fieldset>`;
 }
 
-const EMPTY_VARIANT = { display_name: "", system_prompt: "", voice_id: "" };
+const EMPTY_VARIANT = {
+  display_name: "", system_prompt: "", voice_id: "",
+  face_eyebrows: "neutral", face_eyes: "happy", face_mouth: "smile",
+  face_hairstyle: "kurz", face_beard: "",
+};
 const DEFAULT_PERSONA = {
   model: "", always_loaded: true, max_tokens: 400, reengagement_tendency: 0.5,
   color: "#4A5D52", background_color: "#E9EEEA",
@@ -303,11 +407,12 @@ function fillForm(persona, isCreate) {
   colorInput.value = persona.color;
   backgroundColorInput.value = persona.background_color;
   applyPersonaColorAdmin(colorPreview, persona.color, persona.background_color);
-  colorPreview.innerHTML = avatarSvg("preview", "stick");
+  colorPreview.innerHTML = avatarSvg("preview", FACE_DATA, { ...persona.variants.neutral, color: persona.color });
 
   variantsContainer.innerHTML = GENDER_KEYS
     .map((g) => variantFieldsetHTML(g, persona.variants[g] || EMPTY_VARIANT))
     .join("");
+  refreshVariantPreviews();
 }
 
 function openCreateForm() {
@@ -337,18 +442,49 @@ reengagementInput.addEventListener("input", () => {
 [colorInput, backgroundColorInput].forEach((el) => {
   el.addEventListener("input", () => {
     applyPersonaColorAdmin(colorPreview, colorInput.value, backgroundColorInput.value);
+    refreshVariantPreviews();
   });
+});
+
+// Liest die 5 Gesichts-Dropdowns eines Fieldsets + die aktuell im
+// Formular gesetzte Farbe (color-Feld ist persona-weit, nicht pro
+// Geschlechts-Variante) - fuer die Live-Vorschau.
+function readVariantFace(fieldset) {
+  const face = { color: colorInput.value };
+  FACE_FIELDS.forEach((f) => {
+    face[f] = fieldset.querySelector(`[name="${f}"]`).value;
+  });
+  return face;
+}
+
+function refreshVariantPreviews() {
+  variantsContainer.querySelectorAll(".variant-fieldset").forEach((fs) => {
+    const preview = fs.querySelector(".variant-face-preview");
+    if (!preview) return;
+    preview.innerHTML = avatarSvg("preview", FACE_DATA, readVariantFace(fs));
+  });
+}
+
+// Delegierter Listener statt 5 Listener pro Fieldset x 3 Geschlechter -
+// variantsContainer.innerHTML wird bei jedem fillForm() komplett neu
+// aufgebaut, direkte Listener wuerden dabei ohnehin verloren gehen.
+variantsContainer.addEventListener("change", (e) => {
+  if (FACE_FIELDS.includes(e.target.name)) refreshVariantPreviews();
 });
 
 function collectVariants() {
   const variants = {};
   variantsContainer.querySelectorAll(".variant-fieldset").forEach((fs) => {
     const gender = fs.dataset.gender;
-    variants[gender] = {
+    const variant = {
       display_name: fs.querySelector('[name="display_name"]').value,
       system_prompt: fs.querySelector('[name="system_prompt"]').value,
       voice_id: fs.querySelector('[name="voice_id"]').value,
     };
+    FACE_FIELDS.forEach((f) => {
+      variant[f] = fs.querySelector(`[name="${f}"]`).value;
+    });
+    variants[gender] = variant;
   });
   return variants;
 }

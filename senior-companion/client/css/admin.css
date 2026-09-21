@@ -165,7 +165,8 @@
 
 #personaForm input[type="text"],
 #personaForm input[type="number"],
-#personaForm textarea {
+#personaForm textarea,
+#personaForm select {
   font-family: var(--font-body);
   font-size: 16px;
   padding: 10px 12px;
@@ -233,4 +234,10 @@
 .variant-fieldset label {
   font-size: 15px;
   font-weight: 600;
+}
+
+.variant-face-preview {
+  width: 64px;
+  height: 64px;
+  align-self: center;
 }

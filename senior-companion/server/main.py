@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from fastapi import Depends, FastAPI, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 import admin_auth
 import admin_settings
@@ -106,6 +106,9 @@ def list_personas():
         {
             "id": p.id, "display_name": p.display_name, "voice_id": p.voice_id,
             "color": p.color, "background_color": p.background_color,
+            "face_eyebrows": p.face_eyebrows, "face_eyes": p.face_eyes,
+            "face_mouth": p.face_mouth, "face_hairstyle": p.face_hairstyle,
+            "face_beard": p.face_beard,
         }
         for p in PERSONAS.values()
     ]
@@ -1036,10 +1039,36 @@ def set_persona_gender(persona_id: str, body: PersonaGenderUpdate):
 # ohne Code anzufassen. Reine JSON-API wie jede andere Fernwartungs-
 # Funktion - keine eigene Weboberflaeche in dieser Runde.
 
+_FACE_OPTIONS = {
+    "face_eyebrows": {"angry", "happy", "neutral", "raised", "sad"},
+    "face_eyes": {"bow", "happy", "humble", "wide", "wink"},
+    "face_mouth": {"agape", "angry", "laugh", "sad", "smile"},
+    "face_hairstyle": {
+        "kurz", "kurz_gescheitelt", "spiky", "dutt", "lang_glatt", "lang_gewellt",
+    },
+    "face_beard": {"", "chin", "chinMoustache", "fullBeard", "longBeard", "moustacheTwirl"},
+}
+
+
 class PersonaVariantIn(BaseModel):
     display_name: str
     system_prompt: str
     voice_id: str = ""
+    face_eyebrows: str = "neutral"
+    face_eyes: str = "happy"
+    face_mouth: str = "smile"
+    face_hairstyle: str = "kurz"
+    face_beard: str = ""
+
+    @field_validator(
+        "face_eyebrows", "face_eyes", "face_mouth", "face_hairstyle", "face_beard",
+    )
+    @classmethod
+    def _known_face_option(cls, v: str, info: ValidationInfo) -> str:
+        allowed = _FACE_OPTIONS[info.field_name]
+        if v not in allowed:
+            raise ValueError(f"{info.field_name} muss einer von {sorted(allowed)} sein")
+        return v
 
 
 class PersonaFieldsIn(BaseModel):

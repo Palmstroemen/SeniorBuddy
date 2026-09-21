@@ -127,6 +127,39 @@ def test_create_persona_rejects_bad_color_format():
     assert r.status_code == 422
 
 
+def test_create_persona_rejects_unknown_face_option():
+    body = _persona_body()
+    body["variants"]["neutral"]["face_eyes"] = "banane"
+    with TestClient(main.app) as client:
+        r = client.post("/admin/personas", json=body, headers=ADMIN_HEADERS)
+    assert r.status_code == 422
+
+
+def test_create_persona_without_face_fields_uses_defaults():
+    """_persona_body()'s Varianten enthalten bewusst keine face_*-
+    Schluessel (altes Format) - muss trotzdem erfolgreich anlegen und
+    auf die Pydantic-Defaults zurueckfallen, nicht mit 422 scheitern."""
+    with TestClient(main.app) as client:
+        r = client.post("/admin/personas", json=_persona_body(), headers=ADMIN_HEADERS)
+        assert r.status_code == 201
+        r2 = client.get("/admin/personas/nachbarin", headers=ADMIN_HEADERS)
+    neutral = r2.json()["variants"]["neutral"]
+    assert neutral["face_eyebrows"] == "neutral"
+    assert neutral["face_beard"] == ""
+
+
+def test_create_persona_with_face_fields_roundtrips():
+    body = _persona_body()
+    body["variants"]["maennlich"]["face_beard"] = "fullBeard"
+    body["variants"]["maennlich"]["face_hairstyle"] = "dutt"
+    with TestClient(main.app) as client:
+        client.post("/admin/personas", json=body, headers=ADMIN_HEADERS)
+        r = client.get("/admin/personas/nachbarin", headers=ADMIN_HEADERS)
+    maennlich = r.json()["variants"]["maennlich"]
+    assert maennlich["face_beard"] == "fullBeard"
+    assert maennlich["face_hairstyle"] == "dutt"
+
+
 def test_update_persona_takes_effect_immediately():
     body = _persona_body(None)
     body["variants"]["neutral"]["system_prompt"] = "Neuer Prompt, Sie-Form."

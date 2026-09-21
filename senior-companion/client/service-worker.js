@@ -8,6 +8,7 @@ const SHELL_FILES = [
   "/index.html",
   "/css/style.css",
   "/js/app.js",
+  "/assets/toon-head-faces.json",
   "/manifest.json",
 ];
 

@@ -380,6 +380,17 @@ sich ebenfalls per Fernwartungs-API ändern (Beispiel siehe Abschnitt
    Transparenz-Panel der App, standardmäßig deaktiviert, wenn es
    Internet braucht
 
+## Avatare (Strichgesichter)
+
+Die Gesichts-Avatare basieren auf dem Stil "toon-head" aus der
+Open-Source-Bibliothek [DiceBear](https://www.dicebear.com)
+(https://github.com/dicebear/dicebear), lizenziert unter
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) ©
+DiceBear-Mitwirkende. Die Bauteile (Augen, Augenbrauen, Mund, Frisuren,
+Bart) wurden als statische Daten übernommen
+(`client/assets/toon-head-faces.json`, ohne Körper/Kleidung); Nase und
+Zusammensetzung sind eigene Ergänzungen.
+
 ## Stand / nächste Schritte
 
 Dies ist das Grundgerüst für Phase 1 (Test mit 1–2 Personen). Siehe

@@ -97,10 +97,10 @@ body {
 
 /* --- Avatare (Icon- und Vollbild-Groesse) --------------------------- */
 /* Bewusst einfache Vektorgrafik statt realistischem, lippensynchronem
-   Avatar - zwei waehlbare Stile: "stick" (nur Konturlinien) und
-   "flat" (gefuellte Silhouette), jeweils auf farbigem Rund-Hintergrund
-   pro Persona. Grid-/Medien-Zustaende bewusst nicht Teil dieser Runde,
-   siehe lucky-wishing-pebble.md. */
+   Avatar - reine Strichgesichter (DiceBear "toon-head", CC BY 4.0,
+   siehe README), jeweils auf farbigem Rund-Hintergrund pro Persona.
+   Farbe wird direkt beim Rendern in die SVG-Elemente eingesetzt (siehe
+   avatarSvg() in app.js/admin.js), nicht mehr per CSS-Klasse. */
 
 .avatar-shape-bg {
   border-radius: 50%;
@@ -119,16 +119,11 @@ body {
 .avatar-shape[data-persona="professor"]   { --avatar-color: var(--professor); }
 .avatar-shape[data-persona="technikerin"] { --avatar-color: var(--technikerin); }
 
-.avatar-shape.stick {
+.avatar-shape {
   fill: none;
-  stroke: var(--avatar-color);
   stroke-width: 6;
   stroke-linecap: round;
-}
-
-.avatar-shape.flat {
-  fill: var(--avatar-color);
-  stroke: none;
+  stroke-linejoin: round;
 }
 
 .avatar-icon-bg {

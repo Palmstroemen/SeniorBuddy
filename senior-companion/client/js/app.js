@@ -23,15 +23,28 @@ function loadSetting(key, fallback) {
 let sttMode = loadSetting("senior_companion_stt_mode", "device");
 let ttsMode = loadSetting("senior_companion_tts_mode", "device");
 // "avatar" (Standard) zeigt die Präsenz-Oberfläche, "text" das
-// bisherige Chat-Log. "stick"/"flat" sind die zwei einfachen
-// Avatar-Stile - beide bewusst simpel, siehe lucky-wishing-pebble.md.
+// bisherige Chat-Log. Der frühere Stil-Umschalter (Strichmännchen/
+// Flächig) ist mit den Strichgesicht-Avataren entfallen - es gibt nur
+// noch den einen Stil. Der alte localStorage-Schlüssel
+// "senior_companion_avatar_style" bleibt ungenutzt liegen, harmlos.
 let uiMode = loadSetting("senior_companion_ui_mode", "avatar");
-let avatarStyle = loadSetting("senior_companion_avatar_style", "stick");
 
 let currentPersona = null;     // wer zuletzt sprach (Bubble-Zuordnung/TTS-Stimme)
 let socket = null;
 const PERSONA_NAMES = {};
 const PERSONA_COLORS = {};
+const PERSONA_FACES = {};      // personaId -> {face_eyebrows, face_eyes, face_mouth, face_hairstyle, face_beard}
+
+// Rohdaten des DiceBear-Stils "toon-head" (CC BY 4.0, siehe README) -
+// einmalig geladen, von beiden Rendering-Stellen (Taskleiste + grosse
+// Buehne) gemeinsam genutzt.
+let FACE_DATA = null;
+async function loadFaceData() {
+  if (!FACE_DATA) {
+    FACE_DATA = await (await fetch("assets/toon-head-faces.json")).json();
+  }
+  return FACE_DATA;
+}
 
 // Anwesenheits-Zustand der grossen Avatar-Buehne: wer ist gerade im
 // Raum sichtbar (praesenzgetrieben, siehe presence-Nachricht vom
@@ -67,31 +80,92 @@ const textInput = document.getElementById("textInput");
 const sendBtn = document.getElementById("sendBtn");
 const micBtn = document.getElementById("micBtn");
 
-// --- Avatare: bewusst einfache Vektorgrafik, kein realistischer, ------
-// lippensynchroner Avatar. fill/stroke kommen per CSS-Klasse
-// (.avatar-shape.stick / .flat), die SVG-Formen selbst setzen keine
-// Farbe, damit ein Stilwechsel ohne Neuaufbau moeglich ist.
+// --- Avatare: reine Strichgesichter (DiceBear "toon-head", CC BY --------
+// 4.0), kein Koerper. Bauteil-Baeume kommen aus FACE_DATA (siehe
+// loadFaceData()), Farbe wird beim Rendern direkt eingesetzt statt per
+// CSS-Klasse, damit jede Persona ihre eigene Akzentfarbe behalten kann.
 
-function avatarSvg(personaId, style) {
-  const body = style === "flat"
-    ? `<circle cx="50" cy="26" r="15"/>
-       <path d="M30,96 Q28,42 50,40 Q72,42 70,96 Z"/>`
-    : `<circle cx="50" cy="26" r="15"/>
-       <line x1="50" y1="41" x2="50" y2="72"/>
-       <line x1="50" y1="52" x2="30" y2="68"/>
-       <line x1="50" y1="52" x2="70" y2="68"/>
-       <line x1="50" y1="72" x2="34" y2="96"/>
-       <line x1="50" y1="72" x2="66" y2="96"/>`;
-  return `<svg class="avatar-shape ${style}" data-persona="${personaId}" viewBox="0 0 100 100">${body}</svg>`;
+const HAIRSTYLE_PRESETS = {
+  kurz: { hair: "undercut", rearHair: "neckHigh" },
+  kurz_gescheitelt: { hair: "sideComed", rearHair: "neckHigh" },
+  spiky: { hair: "spiky", rearHair: "neckHigh" },
+  dutt: { hair: "bun", rearHair: "shoulderHigh" },
+  lang_glatt: { hair: "sideComed", rearHair: "longStraight" },
+  lang_gewellt: { hair: "bun", rearHair: "longWavy" },
+};
+
+// Setzt {type:"color", name:"stroke"|"hair"|"skin"}-Platzhalter durch
+// echte Werte; literale Attribute (z.B. die halbtransparenten
+// Schattierungs-Pfade) bleiben unveraendert.
+function faceAttrValue(v, colorMap) {
+  if (v && typeof v === "object" && v.type === "color") return colorMap[v.name];
+  return v;
 }
 
-function refreshAvatarStyles() {
-  document.querySelectorAll(".avatar-icon-bg").forEach((bg) => {
-    bg.innerHTML = avatarSvg(bg.dataset.persona, avatarStyle);
-  });
-  avatarStage.querySelectorAll(".avatar-shape-bg").forEach((bg) => {
-    bg.innerHTML = avatarSvg(bg.dataset.persona, avatarStyle);
-  });
+function faceAttrs(attributes, colorMap) {
+  if (!attributes) return "";
+  return Object.entries(attributes)
+    .map(([k, v]) => ` ${k}="${faceAttrValue(v, colorMap)}"`)
+    .join("");
+}
+
+// Rekursiv, da manche Varianten (z.B. eyebrows.neutral) ein <g> mit
+// verschachtelten <path>-Kindern sind, keine flache Struktur.
+function renderFaceElements(elements, colorMap) {
+  return (elements || [])
+    .map((el) => {
+      const attrs = faceAttrs(el.attributes, colorMap);
+      if (el.children) {
+        return `<${el.name}${attrs}>${renderFaceElements(el.children, colorMap)}</${el.name}>`;
+      }
+      return `<${el.name}${attrs}/>`;
+    })
+    .join("");
+}
+
+function faceComponentGroup(faceData, componentName, variantKey, colorMap) {
+  const component = faceData.components[componentName];
+  const variant = component && component.variants[variantKey];
+  if (!variant) return "";
+  const canvasEl = faceData.canvas.elements.find((e) => e.name === componentName);
+  const transform = canvasEl ? canvasEl.attributes.transform : "";
+  return `<g transform="${transform}">${renderFaceElements(variant.elements, colorMap)}</g>`;
+}
+
+// toon-head hat keine Nase - eigene, handgezeichnete Linie, fest
+// positioniert zwischen Augen- (~y=367) und Mundhoehe (~y=487).
+function noseSvg(color) {
+  return `<path d="M384 380 Q392 420 378 438" stroke="${color}" fill="none" stroke-width="6" stroke-linecap="round"/>`;
+}
+
+function avatarSvg(personaId, faceData, face) {
+  if (!faceData || !face) {
+    return `<svg class="avatar-shape" data-persona="${personaId}" viewBox="0 0 768 768"></svg>`;
+  }
+  const preset = HAIRSTYLE_PRESETS[face.face_hairstyle] || HAIRSTYLE_PRESETS.kurz;
+  const colorMap = { stroke: face.color, hair: "var(--ink)", skin: "none" };
+  const parts = [
+    faceComponentGroup(faceData, "rearHair", preset.rearHair, colorMap),
+    faceComponentGroup(faceData, "head", "head", colorMap),
+    faceComponentGroup(faceData, "eyebrows", face.face_eyebrows, colorMap),
+    faceComponentGroup(faceData, "eyes", face.face_eyes, colorMap),
+    faceComponentGroup(faceData, "mouth", face.face_mouth, colorMap),
+    noseSvg(face.color),
+    faceComponentGroup(faceData, "hair", preset.hair, colorMap),
+    face.face_beard ? faceComponentGroup(faceData, "beard", face.face_beard, colorMap) : "",
+  ];
+  return `<svg class="avatar-shape" data-persona="${personaId}" viewBox="0 0 768 768">${parts.join("")}</svg>`;
+}
+
+// Baut das face-Objekt, das avatarSvg() braucht, aus den beiden
+// unabhaengigen Quellen zusammen: Zuege aus PERSONA_FACES, Farbe aus
+// PERSONA_COLORS (bleibt eine eigene Zustaendigkeit, siehe
+// applyPersonaColor()).
+function faceFor(personaId) {
+  const face = PERSONA_FACES[personaId];
+  const colors = PERSONA_COLORS[personaId];
+  if (!face || !colors) return null;
+  return { ...face, color: colors.color };
 }
 
 // --- Avatar-Buehne: zeigt, wer gerade antwortet/spricht ---------------
@@ -107,6 +181,7 @@ function stageIdle() {
 // (Token-Tempo ist durchs LLM gedrosselt) guenstig genug - kein Diffing
 // noetig.
 function renderAvatarStage() {
+  stopMouthAnimation(); // altes Intervall zielt sonst auf ein gleich entferntes Element
   if (presentPersonas.size === 0) {
     stageIdle();
     return;
@@ -124,13 +199,13 @@ function renderAvatarStage() {
     tile.className = "avatar-tile";
     tile.innerHTML = `
       <span class="avatar-shape-bg avatar-full-bg" data-persona="${personaId}">
-        ${avatarSvg(personaId, avatarStyle)}
+        ${avatarSvg(personaId, FACE_DATA, faceFor(personaId))}
       </span>
       <span class="avatar-full-name">${PERSONA_NAMES[personaId] || ""}</span>
     `;
     const bg = tile.querySelector(".avatar-shape-bg");
     applyPersonaColor(bg, personaId);
-    applySpeakingCue(bg, personaId === speakingPersona);
+    applySpeakingCue(bg, personaId, personaId === speakingPersona);
     grid.appendChild(tile);
   });
   avatarStage.appendChild(grid);
@@ -138,12 +213,41 @@ function renderAvatarStage() {
 }
 
 // Einzige Stelle, die entscheidet, WIE sich eine sprechende Kachel von
-// einer nur-anwesenden unterscheidet - heute Pulsieren + Rahmen (die
-// Strichmaennchen/Flaechen-Avatare haben noch keinen animierbaren
-// Mund). Eine spaetere, elegantere Sprechanimation ersetzt nur DIESE
-// Funktion, renderAvatarStage() selbst bleibt unveraendert.
-function applySpeakingCue(tileBg, isSpeaking) {
+// einer nur-anwesenden unterscheidet - heute Pulsieren + Rahmen UND
+// (neu) eine einfache Mund-Animation. Eine spaetere, elegantere
+// Sprechanimation ersetzt nur DIESE Funktion (und ihre Helfer),
+// renderAvatarStage() selbst bleibt unveraendert.
+function applySpeakingCue(tileBg, personaId, isSpeaking) {
   tileBg.classList.toggle("speaking", isSpeaking);
+  if (isSpeaking) {
+    startMouthAnimation(tileBg, personaId);
+  }
+}
+
+// Kein echtes Lippen-Lesen - wechselt im Sprechrhythmus einfach
+// zwischen dem Ruhe-Mund der Persona und einer offenen Variante
+// ("agape"). Nur eine Persona kann gleichzeitig sprechen, daher genuegt
+// eine einzige Modul-Variable ohne weiteres Gating.
+let mouthAnimationInterval = null;
+
+function stopMouthAnimation() {
+  if (mouthAnimationInterval) {
+    clearInterval(mouthAnimationInterval);
+    mouthAnimationInterval = null;
+  }
+}
+
+function startMouthAnimation(tileBg, personaId) {
+  const face = faceFor(personaId);
+  if (!face || !FACE_DATA) return;
+  let open = false;
+  mouthAnimationInterval = setInterval(() => {
+    open = !open;
+    tileBg.innerHTML = avatarSvg(personaId, FACE_DATA, {
+      ...face,
+      face_mouth: open ? "agape" : face.face_mouth,
+    });
+  }, 220);
 }
 
 // Merkt eine Persona als anwesend (fuegt sie ggf. neu hinzu) und
@@ -177,18 +281,25 @@ function applyUiMode() {
 // --- Personas laden und Tabs aufbauen -------------------------------
 
 async function loadPersonas() {
-  const res = await fetch("/api/personas");
+  const [res] = await Promise.all([fetch("/api/personas"), loadFaceData()]);
   const personas = await res.json();
   personaTabs.innerHTML = "";
   personas.forEach((p) => {
     PERSONA_NAMES[p.id] = p.display_name;
     PERSONA_COLORS[p.id] = { color: p.color, background: p.background_color };
+    PERSONA_FACES[p.id] = {
+      face_eyebrows: p.face_eyebrows,
+      face_eyes: p.face_eyes,
+      face_mouth: p.face_mouth,
+      face_hairstyle: p.face_hairstyle,
+      face_beard: p.face_beard,
+    };
     const btn = document.createElement("button");
     btn.className = "persona-tab";
     btn.dataset.persona = p.id;
     btn.innerHTML = `
       <span class="avatar-shape-bg avatar-icon-bg" data-persona="${p.id}">
-        ${avatarSvg(p.id, avatarStyle)}
+        ${avatarSvg(p.id, FACE_DATA, faceFor(p.id))}
       </span>
       <span class="tab-label">${p.display_name}</span>
     `;
@@ -494,7 +605,6 @@ document.getElementById("panelClose").addEventListener("click", () => {
 const sttModeSelect = document.getElementById("sttModeSelect");
 const ttsModeSelect = document.getElementById("ttsModeSelect");
 const uiModeSelect = document.getElementById("uiModeSelect");
-const avatarStyleSelect = document.getElementById("avatarStyleSelect");
 sttModeSelect.addEventListener("change", (e) => {
   sttMode = e.target.value;
   localStorage.setItem("senior_companion_stt_mode", sttMode);
@@ -508,12 +618,6 @@ uiModeSelect.addEventListener("change", (e) => {
   localStorage.setItem("senior_companion_ui_mode", uiMode);
   applyUiMode();
 });
-avatarStyleSelect.addEventListener("change", (e) => {
-  avatarStyle = e.target.value;
-  localStorage.setItem("senior_companion_avatar_style", avatarStyle);
-  refreshAvatarStyles();
-});
-
 async function openPanel() {
   panelOverlay.hidden = false;
 
@@ -521,7 +625,6 @@ async function openPanel() {
   sttModeSelect.value = sttMode;
   ttsModeSelect.value = ttsMode;
   uiModeSelect.value = uiMode;
-  avatarStyleSelect.value = avatarStyle;
 
   const logRes = await fetch(`/api/transparency/${USER_ID}`);
   const log = await logRes.json();

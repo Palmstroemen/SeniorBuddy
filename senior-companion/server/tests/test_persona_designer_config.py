@@ -98,6 +98,32 @@ def test_remove_persona_override_deletes_custom_persona_entirely():
     assert "wegwerfpersona" not in config.PERSONA_GENDER
 
 
+def test_persona_variant_from_dict_without_face_fields_uses_defaults():
+    """Rueckwaertskompatibilitaet: Varianten-Dicts, die vor dieser Runde
+    gespeichert wurden, haben keine face_*-Schluessel - from_dict()
+    darf dabei nicht mit einem fehlenden Pflichtargument abstuerzen,
+    sondern muss auf die Dataclass-Defaults zurueckfallen (gleiches
+    Prinzip wie das schon laenger bestehende voice_id: str = "")."""
+    old_shaped = {"display_name": "Alt", "system_prompt": "Sie-Form."}
+    restored = config.PersonaVariant.from_dict(old_shaped)
+    assert restored.face_eyebrows == "neutral"
+    assert restored.face_eyes == "happy"
+    assert restored.face_mouth == "smile"
+    assert restored.face_hairstyle == "kurz"
+    assert restored.face_beard == ""
+
+
+def test_apply_persona_overrides_with_old_shaped_dict_still_works():
+    """Derselbe Rueckwaertskompatibilitaets-Fall, aber ueber den
+    tatsaechlichen Lade-Pfad (apply_persona_overrides -> PersonaConfig.
+    from_dict), mit einem Dict im alten Format wie es vor dieser Runde
+    in server/data/admin_settings.json gelegen haben koennte."""
+    config.apply_persona_overrides([_sample_persona_dict("altepersona")])
+    restored = config.PERSONAS["altepersona"]
+    assert restored.variants["neutral"].face_eyebrows == "neutral"
+    assert restored.variants["neutral"].face_beard == ""
+
+
 def test_persona_config_mutate_in_place_object_identity_preserved():
     """Sicherheitskritisch: apply_persona_overrides() darf PERSONAS
     NIEMALS neu binden (config.PERSONAS = {...}), nur mutieren -
