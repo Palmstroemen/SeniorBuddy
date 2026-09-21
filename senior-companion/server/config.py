@@ -129,7 +129,13 @@ class PersonaConfig:
 PERSONAS: dict[str, PersonaConfig] = {
     "freundin": PersonaConfig(
         id="freundin",
-        model="qwen2.5:7b-instruct",
+        # Testweise auf das groessere Modell umgestellt (siehe Gespraech
+        # 2026-09-21/22): das 7B-Modell wiederholte sich bei Auto-Turns
+        # trotz mehrerer Prompt-Anpassungen und erfand Details. Nutzt
+        # dasselbe bereits geladene Modell wie der Professor - kein
+        # zusaetzlicher Speicherbedarf, Ollama haelt es nur einmal
+        # geladen (siehe scheduler.py).
+        model="qwen2.5:32b-instruct",
         always_loaded=True,
         reengagement_tendency=0.8,
         color="#B5637E",
