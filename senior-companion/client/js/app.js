@@ -567,7 +567,19 @@ function stopCurrentSpeech() {
   }
 }
 
+// Wettlauf-Schutz: waehrend speak() im Server-Modus auf fetch("/api/tts")
+// wartet, kann laengst eine NEUERE Ansage gestartet worden sein (z.B.
+// eine echte Antwort, waehrend noch ein Auto-Turn unterwegs war).
+// stopCurrentSpeech() findet in diesem Moment nichts zum Abbrechen, da
+// die aeltere Anfrage noch gar keine Audio-Wiedergabe begonnen hat -
+// ohne diesen Zaehler wuerde sie verspaetet trotzdem noch abspielen,
+// obwohl sie laengst ueberholt ist. Jeder speak()-Aufruf merkt sich
+// seine eigene Generation und bricht nach dem Warten still ab, falls
+// inzwischen eine neuere begonnen hat.
+let speechGeneration = 0;
+
 async function speak(text) {
+  const myGeneration = ++speechGeneration;
   stopCurrentSpeech();
   if (!text) {
     clearSpeakingAndRender();
@@ -583,6 +595,7 @@ async function speak(text) {
       });
       if (!res.ok) throw new Error("Sprachdienst antwortete mit Fehler");
       const blob = await res.blob();
+      if (myGeneration !== speechGeneration) return; // laengst ueberholt
       const seconds = ((performance.now() - start) / 1000).toFixed(1);
       showLatencyNotice(`Sprachausgabe (Server): ${seconds}s`);
       const audio = new Audio(URL.createObjectURL(blob));
@@ -597,6 +610,7 @@ async function speak(text) {
       });
       audio.play();
     } catch (err) {
+      if (myGeneration !== speechGeneration) return; // laengst ueberholt
       // Stiller Fallback aufs Geraet - die Antwort soll trotzdem
       // hoerbar sein, auch wenn der Sprachdienst gerade nicht laeuft.
       speakOnDevice(text);
