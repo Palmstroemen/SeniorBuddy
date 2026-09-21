@@ -13,6 +13,14 @@ Restart=on-failure
 RestartSec=5
 User=senior-companion
 Environment=PYTHONDONTWRITEBYTECODE=1
+# faster-whisper laedt sein Modell ueber huggingface_hub, die beim
+# Start unbedingt nach einer Zugangsdaten-Datei unter ~/.cache/huggingface
+# sucht (auch wenn keine gebraucht wird) - das Zuhause des Dienst-
+# Nutzers ist wegen ProtectHome=true aber nicht lesbar, das liesse den
+# Prozess sofort mit PermissionError abstuerzen. HF_HOME zeigt
+# stattdessen auf ein Verzeichnis, das ReadWritePaths= unten ohnehin
+# schon erlaubt.
+Environment=HF_HOME=/opt/SeniorBuddy/senior-companion/speech-service/voices/.hf_cache
 
 # Nach Messung ggf. aktivieren, um den Sprachdienst von den fuer
 # Ollama/den Chat-Server reservierten Kernen fernzuhalten (siehe
