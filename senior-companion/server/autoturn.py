@@ -70,13 +70,16 @@ def should_continue(reengagement_tendency: float) -> bool:
 
 
 AUTO_CONTINUE_PROMPT = (
-    "Die Person hat gerade nichts gesagt. Du kannst von dir aus kurz "
-    "weitersprechen oder etwas ergaenzen, so wie es zu dir passt - ganz "
-    "natuerlich, ohne die Person direkt anzusprechen, als wuerdest du "
-    "einfach laut weiterdenken oder auf das Gespraech eingehen. WICHTIG: "
-    "Schau nach, was du in der Unterhaltung zuletzt selbst gesagt hast, "
-    "und wiederhole das NICHT, auch nicht in aehnlichen Worten - sag "
-    "etwas WIRKLICH Neues dazu. Faellt dir nichts wirklich Neues ein, "
+    "Die Person hat gerade nichts gesagt. Schau dir an, was sie zuletzt "
+    "in der Unterhaltung erzaehlt hat, und stell dazu eine kurze, "
+    "konkrete Nachfrage oder greife einen Punkt daraus auf. Erfinde "
+    "dabei KEINE neuen Details, Angebote oder Erlebnisse, die dort "
+    "nicht schon vorkamen - lieber konkret nachfragen als frei "
+    "dazuerfinden. Fordere die Person auch NICHT zu einer bestimmten "
+    "Reaktion auf (z.B. 'lachen Sie mit mir' o.ae.) - das wirkt "
+    "aufgesetzt. WICHTIG: Schau nach, was du in der Unterhaltung "
+    "zuletzt selbst gesagt hast, und wiederhole das NICHT, auch nicht "
+    "in aehnlichen Worten. Faellt dir keine konkrete Nachfrage ein, "
     "bleib lieber ganz still (dann gib einfach gar nichts aus). Halte "
     "es kurz."
 )
