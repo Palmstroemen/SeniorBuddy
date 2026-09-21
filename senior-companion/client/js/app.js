@@ -551,7 +551,24 @@ function scheduleStageSafetyNet(text) {
   return () => clearTimeout(timer);
 }
 
+// Es kann jeweils nur EINE Ansage gleichzeitig laufen - ohne das wuerde
+// z.B. ein Auto-Turn, der kurz nach einer noch laufenden Antwort
+// eintrifft, seine Ausgabe einfach parallel starten (beide Geraete-
+// Stimme UND Server-Audio kennen von sich aus keine gemeinsame
+// Warteschlange). stopCurrentSpeech() wird darum am Anfang JEDER neuen
+// Ansage aufgerufen, unabhaengig vom Modus.
+let currentAudio = null;
+
+function stopCurrentSpeech() {
+  window.speechSynthesis?.cancel();
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+}
+
 async function speak(text) {
+  stopCurrentSpeech();
   if (!text) {
     clearSpeakingAndRender();
     return;
@@ -569,10 +586,15 @@ async function speak(text) {
       const seconds = ((performance.now() - start) / 1000).toFixed(1);
       showLatencyNotice(`Sprachausgabe (Server): ${seconds}s`);
       const audio = new Audio(URL.createObjectURL(blob));
+      currentAudio = audio;
       speakingPersona = currentPersona;
       renderAvatarStage();
       const clearSafetyNet = scheduleStageSafetyNet(text);
-      audio.addEventListener("ended", () => { clearSafetyNet(); clearSpeakingAndRender(); });
+      audio.addEventListener("ended", () => {
+        if (currentAudio === audio) currentAudio = null;
+        clearSafetyNet();
+        clearSpeakingAndRender();
+      });
       audio.play();
     } catch (err) {
       // Stiller Fallback aufs Geraet - die Antwort soll trotzdem
@@ -589,12 +611,6 @@ function speakOnDevice(text) {
     clearSpeakingAndRender();
     return;
   }
-  // Bekannte Eigenheit der Web-Speech-API (v.a. unter Linux): eine
-  // haengengebliebene interne Warteschlange kann dieselbe Ansage
-  // mehrfach abspielen. cancel() vor jeder neuen Ansage leert die
-  // Warteschlange zuverlaessig, bevor die naechste Utterance eingereiht
-  // wird - Standard-Workaround fuer dieses Verhalten.
-  window.speechSynthesis.cancel();
   const utter = new SpeechSynthesisUtterance(text);
   utter.lang = "de-AT";
   speakingPersona = currentPersona;
