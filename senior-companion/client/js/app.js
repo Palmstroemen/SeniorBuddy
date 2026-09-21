@@ -21,7 +21,7 @@ function loadSetting(key, fallback) {
   return localStorage.getItem(key) || fallback;
 }
 let sttMode = loadSetting("senior_companion_stt_mode", "device");
-let ttsMode = loadSetting("senior_companion_tts_mode", "device");
+let ttsMode = loadSetting("senior_companion_tts_mode", "server");
 // "avatar" (Standard) zeigt die Präsenz-Oberfläche, "text" das
 // bisherige Chat-Log. Der frühere Stil-Umschalter (Strichmännchen/
 // Flächig) ist mit den Strichgesicht-Avataren entfallen - es gibt nur

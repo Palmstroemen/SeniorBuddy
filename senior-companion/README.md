@@ -300,17 +300,23 @@ Tablet merkt sich damit dauerhaft, zu wem es gehört, ohne
 Login-Bildschirm. Im Transparenz-Panel (ⓘ) steht das aktive Profil zur
 Kontrolle.
 
-## Sprache auf dem Server (optional)
+## Sprache auf dem Server
 
-Standardmäßig laufen Spracherkennung und -ausgabe im Browser (Web
-Speech API) – bequem, aber auf älteren/schwächeren Tablets spürbar
-langsamer, und die Erkennung läuft in Chrome über Googles Server statt
-lokal. Alternative: ein eigener, lokaler Sprachdienst
-(`speech-service/`, separater Prozess mit eigenem venv – wie Ollama
-nicht Teil von `server/`), der `faster-whisper` (Erkennung) und
-`Piper` (Ausgabe) nutzt. Umschaltbar pro Tablet im Transparenz-Panel
-(ⓘ → "Sprache") – nach jeder Aufnahme/Ausgabe erscheint kurz die
-gebrauchte Zeit, zum Vergleichen zwischen Geräte- und Server-Modus.
+Ein eigener, lokaler Sprachdienst (`speech-service/`, separater
+Prozess mit eigenem venv – wie Ollama nicht Teil von `server/`), der
+`faster-whisper` (Erkennung) und `Piper` (Ausgabe) nutzt. Die
+Sprach**ausgabe** läuft standardmäßig darüber (browsereigene Stimmen
+klingen je nach Gerät/Betriebssystem sehr unterschiedlich – auf Linux
+z. B. deutlich roboterhafter – und die wirklich guten Browser-Stimmen
+laufen selbst über einen fremden Cloud-Dienst, was dem
+"alles bleibt im Haus"-Versprechen widerspricht). Die Spracher**kennung**
+läuft weiterhin standardmäßig im Browser (Web Speech API), da sie auf
+schwächeren Tablets meist schon schnell genug ist. Beides ist pro
+Tablet im Transparenz-Panel (ⓘ → "Sprache") umschaltbar – nach jeder
+Aufnahme/Ausgabe erscheint kurz die gebrauchte Zeit, zum Vergleichen
+zwischen Geräte- und Server-Modus. Ist der Sprachdienst nicht
+erreichbar, fällt die Ausgabe automatisch still auf die Geräte-Stimme
+zurück, statt stumm zu bleiben.
 
 ```bash
 cd speech-service
