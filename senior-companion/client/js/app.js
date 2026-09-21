@@ -589,6 +589,12 @@ function speakOnDevice(text) {
     clearSpeakingAndRender();
     return;
   }
+  // Bekannte Eigenheit der Web-Speech-API (v.a. unter Linux): eine
+  // haengengebliebene interne Warteschlange kann dieselbe Ansage
+  // mehrfach abspielen. cancel() vor jeder neuen Ansage leert die
+  // Warteschlange zuverlaessig, bevor die naechste Utterance eingereiht
+  // wird - Standard-Workaround fuer dieses Verhalten.
+  window.speechSynthesis.cancel();
   const utter = new SpeechSynthesisUtterance(text);
   utter.lang = "de-AT";
   speakingPersona = currentPersona;
