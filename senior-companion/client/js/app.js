@@ -143,7 +143,13 @@ function avatarSvg(personaId, faceData, face) {
     return `<svg class="avatar-shape" data-persona="${personaId}" viewBox="0 0 768 768"></svg>`;
   }
   const preset = HAIRSTYLE_PRESETS[face.face_hairstyle] || HAIRSTYLE_PRESETS.kurz;
-  const colorMap = { stroke: face.color, hair: "var(--ink)", skin: "none" };
+  // "skin" faerbt nur den Kopf - der bleibt bewusst NICHT transparent:
+  // ohne opake Fuellung schiene das Hinterkopf-Haar (rearHair), das
+  // hinter dem Kopf liegt, mitten durchs Gesicht durch (wirkte wie eine
+  // dunkle Maske). Die Hintergrundfarbe der Person macht den Kopf
+  // optisch unsichtbar (verschmilzt mit dem Kreis dahinter), blockt das
+  // Hinterkopf-Haar aber korrekt ab.
+  const colorMap = { stroke: face.color, hair: "var(--ink)", skin: face.background || "none" };
   const parts = [
     faceComponentGroup(faceData, "rearHair", preset.rearHair, colorMap),
     faceComponentGroup(faceData, "head", "head", colorMap),
@@ -165,7 +171,7 @@ function faceFor(personaId) {
   const face = PERSONA_FACES[personaId];
   const colors = PERSONA_COLORS[personaId];
   if (!face || !colors) return null;
-  return { ...face, color: colors.color };
+  return { ...face, color: colors.color, background: colors.background };
 }
 
 // --- Avatar-Buehne: zeigt, wer gerade antwortet/spricht ---------------

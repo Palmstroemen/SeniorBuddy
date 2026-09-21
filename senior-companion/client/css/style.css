@@ -217,8 +217,8 @@ body {
 }
 
 .avatar-full-bg .avatar-shape {
-  width: 62%;
-  height: 62%;
+  width: 112%;
+  height: 112%;
 }
 
 /* Sprech-Signal (siehe applySpeakingCue() in app.js): Pulsieren +

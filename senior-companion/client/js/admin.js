@@ -133,7 +133,10 @@ function avatarSvg(personaId, faceData, face) {
     return `<svg class="avatar-shape" data-persona="${personaId}" viewBox="0 0 768 768"></svg>`;
   }
   const preset = HAIRSTYLE_PRESETS[face.face_hairstyle] || HAIRSTYLE_PRESETS.kurz;
-  const colorMap = { stroke: face.color, hair: "var(--ink)", skin: "none" };
+  // Siehe app.js's avatarSvg() fuer die Begruendung: "skin" faerbt den
+  // Kopf mit der Hintergrundfarbe statt transparent, sonst schiene das
+  // Hinterkopf-Haar durchs Gesicht durch.
+  const colorMap = { stroke: face.color, hair: "var(--ink)", skin: face.background || "none" };
   const parts = [
     faceComponentGroup(faceData, "rearHair", preset.rearHair, colorMap),
     faceComponentGroup(faceData, "head", "head", colorMap),
@@ -276,7 +279,7 @@ function renderCards() {
 
     const avatarWrap = document.createElement("span");
     avatarWrap.className = "avatar-shape-bg admin-card-avatar";
-    avatarWrap.innerHTML = avatarSvg(p.id, FACE_DATA, { ...p.variants.neutral, color: p.color });
+    avatarWrap.innerHTML = avatarSvg(p.id, FACE_DATA, { ...p.variants.neutral, color: p.color, background: p.background_color });
     applyPersonaColorAdmin(avatarWrap, p.color, p.background_color);
     card.appendChild(avatarWrap);
 
@@ -407,7 +410,7 @@ function fillForm(persona, isCreate) {
   colorInput.value = persona.color;
   backgroundColorInput.value = persona.background_color;
   applyPersonaColorAdmin(colorPreview, persona.color, persona.background_color);
-  colorPreview.innerHTML = avatarSvg("preview", FACE_DATA, { ...persona.variants.neutral, color: persona.color });
+  colorPreview.innerHTML = avatarSvg("preview", FACE_DATA, { ...persona.variants.neutral, color: persona.color, background: persona.background_color });
 
   variantsContainer.innerHTML = GENDER_KEYS
     .map((g) => variantFieldsetHTML(g, persona.variants[g] || EMPTY_VARIANT))
@@ -450,7 +453,7 @@ reengagementInput.addEventListener("input", () => {
 // Formular gesetzte Farbe (color-Feld ist persona-weit, nicht pro
 // Geschlechts-Variante) - fuer die Live-Vorschau.
 function readVariantFace(fieldset) {
-  const face = { color: colorInput.value };
+  const face = { color: colorInput.value, background: backgroundColorInput.value };
   FACE_FIELDS.forEach((f) => {
     face[f] = fieldset.querySelector(`[name="${f}"]`).value;
   });
@@ -461,6 +464,7 @@ function refreshVariantPreviews() {
   variantsContainer.querySelectorAll(".variant-fieldset").forEach((fs) => {
     const preview = fs.querySelector(".variant-face-preview");
     if (!preview) return;
+    preview.style.background = backgroundColorInput.value;
     preview.innerHTML = avatarSvg("preview", FACE_DATA, readVariantFace(fs));
   });
 }
