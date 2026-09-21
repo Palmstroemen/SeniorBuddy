@@ -185,9 +185,39 @@ body {
   text-align: center;
 }
 
+/* Raster fuer 1-4 gleichzeitig anwesende Personas (siehe
+   lucky-wishing-pebble.md): 1 = heutiges Verhalten (grosser, mittiger
+   Avatar), 2 = nebeneinander, 3-4 = 2x2. */
+.avatar-grid {
+  display: grid;
+  gap: 24px;
+  align-items: center;
+  justify-items: center;
+  width: 100%;
+}
+.avatar-grid-1 { grid-template-columns: 1fr; }
+.avatar-grid-2 { grid-template-columns: 1fr 1fr; }
+.avatar-grid-3,
+.avatar-grid-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+
+.avatar-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.avatar-grid-1 .avatar-full-bg { width: min(70vw, 320px); height: min(70vw, 320px); }
+.avatar-grid-2 .avatar-full-bg { width: min(40vw, 220px); height: min(40vw, 220px); }
+.avatar-grid-3 .avatar-full-bg,
+.avatar-grid-4 .avatar-full-bg { width: min(32vw, 160px); height: min(32vw, 160px); }
+
+.avatar-grid-2 .avatar-full-name,
+.avatar-grid-3 .avatar-full-name,
+.avatar-grid-4 .avatar-full-name { font-size: 18px; }
+
 .avatar-full-bg {
-  width: min(70vw, 320px);
-  height: min(70vw, 320px);
   transition: transform 0.2s ease;
 }
 
@@ -196,8 +226,14 @@ body {
   height: 62%;
 }
 
+/* Sprech-Signal (siehe applySpeakingCue() in app.js): Pulsieren +
+   Rahmen, weil die Strichmaennchen/Flaechen-Avatare noch keinen
+   animierbaren Mund haben. Der Rahmen hilft zusaetzlich, bei mehreren
+   gleichzeitig sichtbaren Kacheln zu erkennen, wer gerade dran ist. */
 .avatar-full-bg.speaking {
   animation: avatar-pulse 1.6s ease-in-out infinite;
+  outline: 4px solid var(--avatar-color);
+  outline-offset: 4px;
 }
 
 .avatar-full-name {

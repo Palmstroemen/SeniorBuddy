@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Anzeige</title>
+<link rel="manifest" href="manifest-tv.json">
+<meta name="theme-color" content="#4A5D52">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/tv.css">
+</head>
+<body class="tv-body">
+
+<!-- Reine Anzeige-Seite: kein Avatar, keine Eingabe, kein Mikrofon.
+     Der Avatar lebt ausschliesslich im Tablet (client/index.html) -
+     diese Seite empfaengt nur "zeig das"-Kommandos ueber
+     /ws/display/{user_id} und zeigt sie gross an. -->
+<div id="tvStage" class="tv-stage">
+  <div id="tvIdle" class="tv-idle">
+    <p class="tv-idle-text">Bereit.</p>
+  </div>
+  <img id="tvImage" class="tv-media" hidden alt="">
+  <video id="tvVideo" class="tv-media" hidden playsinline controls></video>
+</div>
+
+<script src="js/tv.js"></script>
+</body>
+</html>

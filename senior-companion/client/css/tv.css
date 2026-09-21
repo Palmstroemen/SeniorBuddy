@@ -1,0 +1,51 @@
+/* ---------------------------------------------------------------
+   TV-/Zweitbildschirm-Anzeige - nutzt die :root-Design-Tokens aus
+   style.css (Farben/Schriften/--radius), definiert hier nur die
+   eigene Vollbild-Anzeigeflaeche. Bewusst eigene Klassennamen mit
+   "tv-"-Praefix, damit nichts mit style.css's Senioren-UI-Regeln
+   kollidiert.
+------------------------------------------------------------------*/
+
+html, body.tv-body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ink);
+}
+
+.tv-stage {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ink);
+}
+
+.tv-idle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: var(--paper);
+}
+
+.tv-idle-text {
+  color: var(--ink-soft);
+  font-family: var(--font-body);
+  font-size: 20px;
+}
+
+.tv-media {
+  max-width: 100vw;
+  max-height: 100vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.tv-media[hidden],
+.tv-idle[hidden] {
+  display: none;
+}

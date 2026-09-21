@@ -86,3 +86,14 @@ AUTO_WRAPUP_PROMPT = (
     "zu erwarten. Das ist die letzte Aeusserung, bevor es wieder still "
     "wird."
 )
+
+# Beim Verbindungsaufbau in einen leeren Raum (main.py::room_chat,
+# direkt nach websocket.accept()) - dieselbe Mechanik wie ein Auto-Turn
+# (kein echter Nutzer-Input), nur als allererste Aeusserung statt als
+# Fortsetzung einer Stille.
+GREETING_PROMPT = (
+    "Du beginnst gerade neu ein Gespraech mit der Person - sie hat noch "
+    "nichts gesagt. Begruesse sie warm und natuerlich, so wie es zu dir "
+    "passt (z.B. erzaehl kurz etwas von dir oder frag freundlich, wie es "
+    "ihr geht). Halte es kurz und einladend."
+)

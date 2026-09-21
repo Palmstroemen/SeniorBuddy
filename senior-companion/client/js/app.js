@@ -28,10 +28,21 @@ let ttsMode = loadSetting("senior_companion_tts_mode", "device");
 let uiMode = loadSetting("senior_companion_ui_mode", "avatar");
 let avatarStyle = loadSetting("senior_companion_avatar_style", "stick");
 
-let currentPersona = null;
+let currentPersona = null;     // wer zuletzt sprach (Bubble-Zuordnung/TTS-Stimme)
 let socket = null;
 const PERSONA_NAMES = {};
 const PERSONA_COLORS = {};
+
+// Anwesenheits-Zustand der grossen Avatar-Buehne: wer ist gerade im
+// Raum sichtbar (praesenzgetrieben, siehe presence-Nachricht vom
+// Server), und wer davon GERADE spricht (Token-Stream/TTS-Wiedergabe -
+// hoechstens eine Persona gleichzeitig). lastActiveTs bestimmt bei mehr
+// als MAX_VISIBLE_PERSONAS Anwesenden, welche tatsaechlich gezeigt
+// werden (die am laengsten inaktive faellt aus der Anzeige, nicht aus
+// der eigentlichen Anwesenheit).
+const presentPersonas = new Map(); // personaId -> { lastActiveTs: number }
+let speakingPersona = null;
+const MAX_VISIBLE_PERSONAS = 4;
 
 // Setzt Avatar-Farbe/Hintergrund auf dem STABILEN Eltern-Element
 // (.avatar-shape-bg), nicht auf der SVG selbst - refreshAvatarStyles()
@@ -78,8 +89,9 @@ function refreshAvatarStyles() {
   document.querySelectorAll(".avatar-icon-bg").forEach((bg) => {
     bg.innerHTML = avatarSvg(bg.dataset.persona, avatarStyle);
   });
-  const stageBg = document.getElementById("stageAvatarBg");
-  if (stageBg) stageBg.innerHTML = avatarSvg(stageBg.dataset.persona, avatarStyle);
+  avatarStage.querySelectorAll(".avatar-shape-bg").forEach((bg) => {
+    bg.innerHTML = avatarSvg(bg.dataset.persona, avatarStyle);
+  });
 }
 
 // --- Avatar-Buehne: zeigt, wer gerade antwortet/spricht ---------------
@@ -88,19 +100,73 @@ function stageIdle() {
   avatarStage.innerHTML = '<p class="stage-hint">Tippe unten etwas, oder halte den Mikrofon-Knopf gedrückt, um zu sprechen.</p>';
 }
 
-function stageShow(personaId, speaking) {
-  let bg = document.getElementById("stageAvatarBg");
-  if (!bg || bg.dataset.persona !== personaId) {
-    avatarStage.innerHTML = `
-      <span class="avatar-shape-bg avatar-full-bg" id="stageAvatarBg" data-persona="${personaId}">
+// Baut die gesamte Avatar-Buehne aus presentPersonas + speakingPersona
+// neu auf - einzige Stelle, die avatarStage.innerHTML schreibt (frueher
+// zwei Quellen der Wahrheit: stageShow()/stageIdle()). Immer von Grund
+// auf neu zu rendern ist bei max. 4 Kacheln und seltenen Aufrufen
+// (Token-Tempo ist durchs LLM gedrosselt) guenstig genug - kein Diffing
+// noetig.
+function renderAvatarStage() {
+  if (presentPersonas.size === 0) {
+    stageIdle();
+    return;
+  }
+  const ordered = [...presentPersonas.entries()]
+    .sort((a, b) => b[1].lastActiveTs - a[1].lastActiveTs)
+    .slice(0, MAX_VISIBLE_PERSONAS)
+    .map(([personaId]) => personaId);
+
+  avatarStage.innerHTML = "";
+  const grid = document.createElement("div");
+  grid.className = `avatar-grid avatar-grid-${ordered.length}`;
+  ordered.forEach((personaId) => {
+    const tile = document.createElement("div");
+    tile.className = "avatar-tile";
+    tile.innerHTML = `
+      <span class="avatar-shape-bg avatar-full-bg" data-persona="${personaId}">
         ${avatarSvg(personaId, avatarStyle)}
       </span>
       <span class="avatar-full-name">${PERSONA_NAMES[personaId] || ""}</span>
     `;
-    bg = document.getElementById("stageAvatarBg");
+    const bg = tile.querySelector(".avatar-shape-bg");
     applyPersonaColor(bg, personaId);
+    applySpeakingCue(bg, personaId === speakingPersona);
+    grid.appendChild(tile);
+  });
+  avatarStage.appendChild(grid);
+  syncPersonaPresentTabs(ordered);
+}
+
+// Einzige Stelle, die entscheidet, WIE sich eine sprechende Kachel von
+// einer nur-anwesenden unterscheidet - heute Pulsieren + Rahmen (die
+// Strichmaennchen/Flaechen-Avatare haben noch keinen animierbaren
+// Mund). Eine spaetere, elegantere Sprechanimation ersetzt nur DIESE
+// Funktion, renderAvatarStage() selbst bleibt unveraendert.
+function applySpeakingCue(tileBg, isSpeaking) {
+  tileBg.classList.toggle("speaking", isSpeaking);
+}
+
+// Merkt eine Persona als anwesend (fuegt sie ggf. neu hinzu) und
+// aktualisiert ihren Aktivitaets-Zeitstempel.
+function markPersonaPresentOnStage(personaId, ts = Date.now()) {
+  presentPersonas.set(personaId, { lastActiveTs: ts });
+}
+
+// Ersetzt die Anwesenheitsliste 1:1 durch das, was die presence-
+// Nachricht vom Server meldet (abgleichende Quelle der Wahrheit,
+// insbesondere fuers Entfernen nach Timeout, das der Client vorher gar
+// nicht wissen konnte). Bestehende Zeitstempel bleiben fuer weiterhin
+// anwesende Personas erhalten, damit die Kachel-Reihenfolge nicht bei
+// jedem Abgleich springt.
+function applyPresenceFromServer(presentIds) {
+  const now = Date.now();
+  const nextIds = new Set(presentIds);
+  for (const id of [...presentPersonas.keys()]) {
+    if (!nextIds.has(id)) presentPersonas.delete(id);
   }
-  bg.classList.toggle("speaking", !!speaking);
+  for (const id of presentIds) {
+    if (!presentPersonas.has(id)) presentPersonas.set(id, { lastActiveTs: now });
+  }
 }
 
 function applyUiMode() {
@@ -158,13 +224,14 @@ function markPersonaActive(personaId) {
   });
 }
 
-// Rein kosmetisch (siehe .persona-tab.present in style.css): sobald
-// wir eine Antwort von dieser Persona gesehen haben, war sie laut
-// Server tatsaechlich im Raum - keine eigene Anwesenheits-Abfrage
-// noetig fuer diese kleine visuelle Rueckmeldung.
-function markPersonaPresent(personaId) {
-  const tab = document.querySelector(`.persona-tab[data-persona="${personaId}"]`);
-  if (tab) tab.classList.add("present");
+// Kleine Taskleisten-Kachel: .present-Klasse aus derselben Liste
+// gespeist wie die grosse Buehne (siehe renderAvatarStage()) - dadurch
+// inklusive Entfernen nach Timeout, was vorher gar nicht moeglich war.
+function syncPersonaPresentTabs(presentIds) {
+  const presentSet = new Set(presentIds);
+  document.querySelectorAll(".persona-tab").forEach((tab) => {
+    tab.classList.toggle("present", presentSet.has(tab.dataset.persona));
+  });
 }
 
 // --- WebSocket-Verbindung ---------------------------------------------
@@ -193,18 +260,34 @@ function connect() {
       }
       assistantBubble.textContent += msg.content;
       chatArea.scrollTop = chatArea.scrollHeight;
-      stageShow(currentPersona, false);
-      markPersonaPresent(currentPersona);
+      // Optimistisch: sofort als anwesend/sprechend anzeigen, noch bevor
+      // die naechste presence-Nachricht das bestaetigt (Server schickt
+      // presence erst wieder beim naechsten Zug/Tick, siehe main.py) -
+      // gleiche gefuehlte Reaktionsgeschwindigkeit wie zuvor.
+      speakingPersona = currentPersona;
+      markPersonaPresentOnStage(currentPersona);
+      renderAvatarStage();
     } else if (msg.type === "done") {
       if (msg.persona) currentPersona = msg.persona;
       markPersonaActive(currentPersona);
-      markPersonaPresent(currentPersona);
+      markPersonaPresentOnStage(currentPersona);
+      renderAvatarStage();
       if (assistantBubble) speak(assistantBubble.textContent);
       assistantBubble = null;
+    } else if (msg.type === "presence") {
+      applyPresenceFromServer(msg.present || []);
+      if (speakingPersona && !presentPersonas.has(speakingPersona)) {
+        speakingPersona = null;
+      }
+      renderAvatarStage();
     } else if (msg.type === "blocked") {
       addBubble("Diese Nachricht konnte ich so nicht beantworten.", "notice");
       assistantBubble = null;
-      stageIdle();
+      // Kein stageIdle() hier - niemandes Anwesenheit ist betroffen
+      // (kein persona-Feld), bereits anwesende Personas bleiben
+      // sichtbar, nur niemand "spricht" gerade.
+      speakingPersona = null;
+      renderAvatarStage();
     }
   });
 }
@@ -224,7 +307,10 @@ function sendMessage() {
   const text = textInput.value.trim();
   if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
   addBubble(text, "user");
-  if (currentPersona) stageShow(currentPersona, false);
+  if (currentPersona) {
+    speakingPersona = null;
+    renderAvatarStage();
+  }
   socket.send(text);
   textInput.value = "";
 }
@@ -338,14 +424,19 @@ if (SpeechRecognition || navigator.mediaDevices) {
 // Textlaenge orientierten Schaetzung wird sie freigegeben. Per echtem
 // Test in einer Headless-Umgebung ohne installierte Stimmen gefunden
 // (dort feuert speechSynthesis weder "end" noch "error").
+function clearSpeakingAndRender() {
+  speakingPersona = null;
+  renderAvatarStage();
+}
+
 function scheduleStageSafetyNet(text) {
-  const timer = setTimeout(stageIdle, Math.max(4000, text.length * 90));
+  const timer = setTimeout(clearSpeakingAndRender, Math.max(4000, text.length * 90));
   return () => clearTimeout(timer);
 }
 
 async function speak(text) {
   if (!text) {
-    stageIdle();
+    clearSpeakingAndRender();
     return;
   }
   if (ttsMode === "server") {
@@ -361,9 +452,10 @@ async function speak(text) {
       const seconds = ((performance.now() - start) / 1000).toFixed(1);
       showLatencyNotice(`Sprachausgabe (Server): ${seconds}s`);
       const audio = new Audio(URL.createObjectURL(blob));
-      stageShow(currentPersona, true);
+      speakingPersona = currentPersona;
+      renderAvatarStage();
       const clearSafetyNet = scheduleStageSafetyNet(text);
-      audio.addEventListener("ended", () => { clearSafetyNet(); stageIdle(); });
+      audio.addEventListener("ended", () => { clearSafetyNet(); clearSpeakingAndRender(); });
       audio.play();
     } catch (err) {
       // Stiller Fallback aufs Geraet - die Antwort soll trotzdem
@@ -377,14 +469,15 @@ async function speak(text) {
 
 function speakOnDevice(text) {
   if (!window.speechSynthesis || !text) {
-    stageIdle();
+    clearSpeakingAndRender();
     return;
   }
   const utter = new SpeechSynthesisUtterance(text);
   utter.lang = "de-AT";
-  stageShow(currentPersona, true);
+  speakingPersona = currentPersona;
+  renderAvatarStage();
   const clearSafetyNet = scheduleStageSafetyNet(text);
-  const finish = () => { clearSafetyNet(); stageIdle(); };
+  const finish = () => { clearSafetyNet(); clearSpeakingAndRender(); };
   utter.addEventListener("end", finish);
   utter.addEventListener("error", finish);
   window.speechSynthesis.speak(utter);

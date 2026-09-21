@@ -26,6 +26,7 @@ import analysis
 import autoturn
 import config
 import director
+import display
 import handoff
 import honeypot
 import knowledge
@@ -180,6 +181,26 @@ def add_fact(user_id: str, body: FactUpdate):
         raise HTTPException(400, f"Wert wurde vom Guard blockiert (Regel={check['rule']})")
     memory.add_fact(user_id, body.key, body.value, body.source_persona)
     return {"user_id": user_id, "key": body.key, "value": body.value}
+
+
+# ---------------------------------------------------------------------
+# TV-/Zweitbildschirm: manueller Ausloeser zum Anzeigen eines Bilds
+# oder Videos (Testwerkzeug fuer jetzt; spaeter von einer
+# Sprachbefehls-Erkennung aufgerufen). Bild/Video wird vom Client
+# anhand der URL-Dateiendung unterschieden (siehe tv.js) - kein
+# redundantes "kind"-Feld hier noetig.
+# ---------------------------------------------------------------------
+
+class DisplayCommand(BaseModel):
+    url: str
+
+
+@app.post("/api/display/{user_id}")
+async def trigger_display(user_id: str, body: DisplayCommand):
+    delivered = await display.broadcast(
+        user_id, {"type": "display", "url": body.url},
+    )
+    return {"delivered_to": delivered}
 
 
 # ---------------------------------------------------------------------
@@ -638,10 +659,19 @@ async def run_turn(
     await websocket.send_json({"type": "done", "persona": persona.id})
 
 
+_AUTO_TURN_PROMPTS = {
+    "continue": autoturn.AUTO_CONTINUE_PROMPT,
+    "wrapup": autoturn.AUTO_WRAPUP_PROMPT,
+    "greeting": autoturn.GREETING_PROMPT,
+}
+
+
 async def run_auto_turn(
-    user_id: str, persona, websocket: WebSocket, present: list[str], final: bool,
+    user_id: str, persona, websocket: WebSocket, present: list[str], kind: str,
 ) -> bool:
-    """Unaufgeforderte Fortsetzung ohne neue Nutzer-Nachricht. Bewusst
+    """Unaufgeforderte Aeusserung ohne neue Nutzer-Nachricht - Fortsetzung
+    nach Stille ("continue"/"wrapup") oder Begruessung bei leerem Raum
+    beim Verbindungsaufbau ("greeting", siehe room_chat()). Bewusst
     OHNE secrecy.handle_turn() (kein echter Nutzer-Text zum
     Interpretieren), OHNE Plugin-Trigger/Fakten-/Wissensbasis-Injektion
     (der Auto-Prompt bittet explizit ums freie Weiterreden, nicht ums
@@ -676,7 +706,7 @@ async def run_auto_turn(
     ]
     chat_messages.append({
         "role": "system",
-        "content": autoturn.AUTO_WRAPUP_PROMPT if final else autoturn.AUTO_CONTINUE_PROMPT,
+        "content": _AUTO_TURN_PROMPTS[kind],
     })
 
     tokens: list[str] = []
@@ -720,6 +750,31 @@ async def run_auto_turn(
 async def room_chat(websocket: WebSocket, user_id: str):
     await websocket.accept()
 
+    last_sent_present: list[str] | None = None
+
+    async def _send_presence_if_changed(present: list[str]) -> None:
+        nonlocal last_sent_present
+        if last_sent_present is not None and set(present) == set(last_sent_present):
+            return
+        last_sent_present = list(present)
+        await websocket.send_json({"type": "presence", "present": present})
+
+    # Leerer Raum beim Verbindungsaufbau (echter Erststart, oder
+    # Rueckkehr nach mehr als PRESENCE_TIMEOUT_SECONDS Stille) - die
+    # Standard-Persona begruesst von sich aus, ohne auf eine
+    # Nutzer-Nachricht zu warten.
+    present_at_start = room.present_personas(user_id)
+    if not present_at_start:
+        greeter = PERSONAS[FALLBACK_PERSONA]
+        await run_auto_turn(user_id, greeter, websocket, present_at_start, kind="greeting")
+    else:
+        # Raum war schon besetzt (laufendes Gespraech, z.B. nach einem
+        # Seiten-Neuladen) - Client sofort informieren, statt bis zu
+        # SHORT_PAUSE_SECONDS auf den naechsten Tick warten zu lassen:
+        # der Anwesenheits-Zustand ist client-seitig rein In-Memory und
+        # geht bei jedem Neuladen verloren.
+        await _send_presence_if_changed(present_at_start)
+
     last_user_message_ts = time.time()
     consecutive_auto_turns = 0
     wrapup_sent = False
@@ -731,10 +786,11 @@ async def room_chat(websocket: WebSocket, user_id: str):
                     websocket.receive_text(), timeout=autoturn.SHORT_PAUSE_SECONDS,
                 )
             except asyncio.TimeoutError:
+                present = room.present_personas(user_id)
+                await _send_presence_if_changed(present)
+
                 if not autoturn.ENABLED:
                     continue
-
-                present = room.present_personas(user_id)
                 if not present:
                     continue
 
@@ -759,7 +815,7 @@ async def room_chat(websocket: WebSocket, user_id: str):
                     )
                     persona = PERSONAS.get(picked_id) or PERSONAS[FALLBACK_PERSONA]
                     completed = await run_auto_turn(
-                        user_id, persona, websocket, present, final=True,
+                        user_id, persona, websocket, present, kind="wrapup",
                     )
                     if completed:
                         wrapup_sent = True
@@ -783,7 +839,7 @@ async def room_chat(websocket: WebSocket, user_id: str):
                 picked_id = director.pick_responder(candidates, None, last_active, time.time())
                 persona = PERSONAS.get(picked_id) or PERSONAS[FALLBACK_PERSONA]
                 completed = await run_auto_turn(
-                    user_id, persona, websocket, present, final=False,
+                    user_id, persona, websocket, present, kind="continue",
                 )
                 if completed:
                     consecutive_auto_turns += 1
@@ -810,6 +866,7 @@ async def room_chat(websocket: WebSocket, user_id: str):
                 room.touch(user_id, addressed)
 
             present = room.present_personas(user_id)
+            await _send_presence_if_changed(present)
             if not present:
                 present = [addressed] if addressed else [FALLBACK_PERSONA]
 
@@ -829,9 +886,30 @@ async def room_chat(websocket: WebSocket, user_id: str):
             persona = PERSONAS.get(picked_id) or PERSONAS[FALLBACK_PERSONA]
 
             await run_turn(user_id, persona, websocket, user_text, addressed, present)
+            await _send_presence_if_changed(room.present_personas(user_id))
 
     except WebSocketDisconnect:
         log.info("Raum-Verbindung getrennt: %s", user_id)
+
+
+# ---------------------------------------------------------------------
+# TV-/Zweitbildschirm-Anzeige (WebSocket, damit der Server Bild/Video
+# aktiv "pushen" kann statt dass der Fernseher pollt). Der TV-Client
+# schickt selbst nie sinnvolle Inhalte - der Empfangsloop dient nur
+# dazu, ein Trennen der Verbindung zu erkennen (siehe display.py).
+# ---------------------------------------------------------------------
+
+@app.websocket("/ws/display/{user_id}")
+async def display_socket(websocket: WebSocket, user_id: str):
+    await websocket.accept()
+    display.register(user_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # nur zur Verbindungs-Ueberwachung, Inhalt wird ignoriert
+    except WebSocketDisconnect:
+        log.info("Anzeige getrennt (user_id=%s)", user_id)
+    finally:
+        display.unregister(user_id, websocket)
 
 
 # ---------------------------------------------------------------------
