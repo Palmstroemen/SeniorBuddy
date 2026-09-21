@@ -30,6 +30,20 @@ def test_list_personas_returns_all_four():
     assert ids == {"freundin", "reporter", "professor", "technikerin"}
 
 
+def test_version_endpoint_reports_a_commit_string():
+    """Damit sich nach einem Deploy (git pull + Neustart) von aussen
+    ueberpruefen laesst, ob der laufende Prozess tatsaechlich den neuen
+    Code geladen hat - der Wert wird beim Start EINMAL ermittelt (siehe
+    main.APP_VERSION), spiegelt also den Stand zum Prozessstart, nicht
+    den aktuellen Stand der Dateien auf der Platte."""
+    with TestClient(main.app) as client:
+        r = client.get("/api/version")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body["commit"], str)
+    assert body["commit"] != ""
+
+
 def test_plugin_list_shows_weather_disabled_by_default():
     with TestClient(main.app) as client:
         r = client.get("/api/plugins")

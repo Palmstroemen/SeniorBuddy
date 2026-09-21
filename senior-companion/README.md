@@ -159,6 +159,13 @@ curl "$BASE/admin/personas" -H "Authorization: Bearer $TOKEN"
 curl -X POST "$BASE/admin/update" -H "Authorization: Bearer $TOKEN"
 curl "$BASE/admin/update/status" -H "Authorization: Bearer $TOKEN"
 
+# Welcher Commit laeuft gerade? (kein Token noetig, oeffentlich) - der
+# Wert wird beim Prozessstart einmal ermittelt, aendert sich also erst
+# nach einem echten Neustart, nicht schon durch ein blosses "git pull"
+# auf der Platte - nuetzlich um nach einem Update zu pruefen, ob der
+# neue Code auch wirklich laeuft, bevor man auf Browser-Cache tippt.
+curl "$BASE/api/version"
+
 # Todesfall bestaetigen: fuehrt alle offenen "im Todesfall loeschen"-
 # Anweisungen dieser Person aus (siehe unten). confirm_user_id muss
 # der Pfad-Parameter sein - Schutz gegen versehentliches Ausloesen.

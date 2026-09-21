@@ -10,10 +10,12 @@ Modelle sind gepullt (siehe README.md).
 import asyncio
 import logging
 import re
+import subprocess
 import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,6 +51,27 @@ log = logging.getLogger("main")
 plugins = discover_plugins()
 guard = security.BasicGuard()
 _started_at = time.time()
+
+
+def _read_git_commit() -> str:
+    """Wird EINMAL beim Modul-Import ermittelt (siehe APP_VERSION unten),
+    nicht bei jedem Aufruf - soll den Stand widerspiegeln, mit dem
+    dieser Prozess tatsaechlich gestartet wurde. Ein "git pull" auf der
+    Platte ohne anschliessenden Neustart (systemctl restart
+    senior-companion) aendert diesen Wert bewusst NICHT, genau das
+    macht ihn als Diagnose fuer "laeuft der neue Code schon?" nuetzlich."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, check=True, timeout=5,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "unbekannt"
+
+
+APP_VERSION = _read_git_commit()
 
 # System-Prompt fuer /ws/raw - bewusst ohne Persona, siehe dort.
 RAW_SYSTEM_PROMPT = "Du bist ein hilfreicher Assistent."
@@ -99,6 +122,11 @@ app.add_middleware(
 # ---------------------------------------------------------------------
 # Personas & Transparenz
 # ---------------------------------------------------------------------
+
+@app.get("/api/version")
+def get_version():
+    return {"commit": APP_VERSION}
+
 
 @app.get("/api/personas")
 def list_personas():
