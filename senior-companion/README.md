@@ -320,17 +320,20 @@ zurück, statt stumm zu bleiben.
 
 ```bash
 cd speech-service
-./setup.sh          # venv, Abhaengigkeiten, eine Test-Stimme (~60 MB)
+./setup.sh                # venv, Abhaengigkeiten, eine Test-Stimme (~60 MB)
+./fetch_all_voices.sh     # alle 5 von den mitgelieferten Personas gebrauchten Stimmen
 source .venv/bin/activate
 uvicorn main:app --host 127.0.0.1 --port 8100
 ```
 
 Für Dauerbetrieb: `speech-service/deploy/speech-service.service` wie
 `senior-companion.service` einrichten (siehe unten). Jede Persona hat
-in `server/config.py` eine eigene Piper-Stimme (`voice_id`) – weitere
-Stimmen liegen unter
+in `server/config.py` eine eigene Piper-Stimme (`voice_id`) –
+`fetch_all_voices.sh` laedt alle aktuell gebrauchten auf einmal nach
+(ueberspringt schon vorhandene, kann also gefahrlos erneut laufen);
+fuer eine NEUE, dort noch nicht gelistete Stimme siehe
 [huggingface.co/rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE),
-werden nach `speech-service/voices/` gelegt (genau wie Ollama-Modelle
+manuell nach `speech-service/voices/` legen (genau wie Ollama-Modelle
 erst per `ollama pull` geladen werden müssen).
 
 **CPU-Isolation:** falls der Sprachdienst spürbar mit den Personas um
