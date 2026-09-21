@@ -3,8 +3,8 @@ Description=Fuehrt ein per /admin/update angefordertes Update aus (git pull + Ne
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/senior-companion
-ExecStart=/opt/senior-companion/deploy/run_update.sh
+WorkingDirectory=/opt/SeniorBuddy/senior-companion
+ExecStart=/opt/SeniorBuddy/senior-companion/deploy/run_update.sh
 # Bewusst OHNE User= (laeuft als root): git pull + systemctl restart
 # sind privilegierte Operationen. Das ist hier sicherheitstechnisch
 # unproblematisch, weil dieser Dienst NIE direkt vom Netz erreichbar

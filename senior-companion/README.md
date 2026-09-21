@@ -12,11 +12,20 @@ Hintergründe zu den Architekturentscheidungen.
 
 Voraussetzungen:
 - Python 3.11+
-- [Ollama](https://ollama.com) installiert und lauffähig
+
+`./deploy/setup.sh` installiert bei Bedarf automatisch das `python3-venv`-
+Systempaket sowie [Ollama](https://ollama.com), falls beides noch fehlt.
+
+Empfehlung für einen frischen Server: zuerst `./deploy/setup_tailscale.sh`
+ausführen (kurz, braucht eine einmalige Anmeldung im Browser) – danach ist
+der Server bereits per Tailscale erreichbar, auch während der folgenden,
+teils langen Ollama-Modell-Downloads in `setup.sh` (unabhängig von
+lokalem WLAN/Router).
 
 ```bash
 git clone <dein-repo-url>
 cd senior-companion
+./deploy/setup_tailscale.sh
 ./deploy/setup.sh
 cd server
 source .venv/bin/activate
@@ -40,10 +49,11 @@ Ports zu öffnen, treten Server **und** jedes Tablet demselben
 geräteweise Authentifizierung):
 
 ```bash
-# Auf dem Server (macht deploy/setup.sh bereits mit):
+# Auf dem Server (macht deploy/setup_tailscale.sh bereits mit):
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
-# Dienst im Tailnet freigeben, ohne dass uvicorn selbst nach aussen bindet:
+# Dienst im Tailnet freigeben, ohne dass uvicorn selbst nach aussen bindet
+# (erst NACH dem App-Setup, deploy/setup.sh, sinnvoll):
 sudo tailscale serve --bg 8000
 ```
 
@@ -136,6 +146,15 @@ curl -X POST "$BASE/admin/config/satisfaction-interval" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"days": 7}'
 
+# Auto-Turns (Personas melden sich bei Stille von sich aus, siehe
+# "Gruppenchat & Auto-Turns" oben) global an-/abschalten
+curl -X POST "$BASE/admin/config/auto-turns" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+
+# Personas anlegen/bearbeiten/loeschen (siehe "Persona-Designer" oben)
+curl "$BASE/admin/personas" -H "Authorization: Bearer $TOKEN"
+
 # Update anstossen (siehe unten, was dabei passiert) + Status abfragen
 curl -X POST "$BASE/admin/update" -H "Authorization: Bearer $TOKEN"
 curl "$BASE/admin/update/status" -H "Authorization: Bearer $TOKEN"
@@ -194,6 +213,76 @@ Einrichtung:
 sudo cp deploy/senior-companion-updater.{path,service} /etc/systemd/system/
 sudo systemctl enable --now senior-companion-updater.path
 ```
+
+## Gruppenchat & Auto-Turns
+
+Mehrere Personas können gleichzeitig "anwesend" sein und abwechselnd
+antworten – passiert automatisch, sobald jemand mehr als eine Persona
+in derselben Sitzung anspricht (z. B. "Wallner, was meinst du dazu?",
+während gerade mit Robin gesprochen wurde). Ein vertrauliches Thema
+(siehe oben, "Sicheres Löschen auf Wunsch + Todesfall") wird dabei nie
+an eine andere anwesende Persona weitergegeben – das ist die
+sicherheitskritischste Eigenschaft des ganzen Features und
+entsprechend gründlich getestet.
+
+Bleibt die Person länger still, kann eine anwesende Persona von sich
+aus weiterreden statt nur zu antworten ("Auto-Turns") – wie stark das
+passiert, steuert die "Neigung" jeder Persona (siehe Persona-Designer
+unten: eine geschwätzige Persona fragt öfter nach, eine zurückhaltende
+lässt der Person mehr Ruhe). Nach längerer Stille verabschiedet sich
+die zuletzt aktive Persona einmal warm und wird dann still, bis wieder
+etwas gesagt wird. Global abschaltbar über `/admin/config/auto-turns`
+(Beispiel siehe Abschnitt "Fernwartungs-API" oben).
+
+Auf Wunsch gibt eine Persona eine kurze Zusammenfassung des bisherigen
+Gesprächs an eine andere weiter, ganz ohne dass beide gleichzeitig
+anwesend sein müssen ("Robin, erzähl das mal Wallner") – läuft im
+Hintergrund nach der sichtbaren Antwort, die laufende Unterhaltung
+kommt dadurch nicht ins Stocken. Auch hier gilt: ein als vertraulich
+markiertes Thema wird nie in eine solche Zusammenfassung aufgenommen.
+
+## Personas anlegen/bearbeiten (Persona-Designer)
+
+Über `admin.html` (im selben Tailnet erreichbar, z. B.
+`https://senior-pc.<tailnet>.ts.net/admin.html`) lassen sich Personas
+komplett ohne Code-Änderung anlegen, bearbeiten und löschen – gesichert
+mit demselben `SENIOR_COMPANION_ADMIN_TOKEN` wie die übrige
+Fernwartungs-API (einmal eingeben, bleibt im Browser gespeichert, bis
+"Abmelden" gedrückt wird).
+
+Bearbeitbar je Persona: Name und Systemprompt für jede der drei
+Geschlechts-Varianten (neutral/weiblich/männlich), Modell, ob sie
+dauerhaft geladen bleibt, maximale Antwortlänge, die oben erwähnte
+"Neigung" fürs Gruppenchat-Verhalten, Avatar-Farbe. Auch die 4
+mitgelieferten Personas (Robin/Alex/Wallner/Toni) lassen sich so
+bearbeiten – "Zurücksetzen" stellt dabei den Auslieferungszustand
+wieder her, statt die Persona ganz zu entfernen (mehrere Stellen im
+Code setzen voraus, dass es sie gibt).
+
+Dieselbe Funktionalität steht auch als reine JSON-API zur Verfügung,
+z. B. für eigene Skripte oder ohne Browser:
+
+```bash
+curl "$BASE/admin/personas" -H "Authorization: Bearer $TOKEN"
+
+curl -X POST "$BASE/admin/personas" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "id": "nachbarin", "model": "qwen2.5:7b-instruct",
+    "always_loaded": true, "max_tokens": 400,
+    "reengagement_tendency": 0.5,
+    "color": "#7A5C99", "background_color": "#EEE9F2",
+    "variants": {
+      "neutral":   {"display_name": "Erna", "system_prompt": "...", "voice_id": "de_DE-thorsten-low"},
+      "weiblich":  {"display_name": "Erna", "system_prompt": "...", "voice_id": "de_DE-kerstin-low"},
+      "maennlich": {"display_name": "Erwin", "system_prompt": "...", "voice_id": "de_DE-thorsten-low"}
+    }
+  }'
+```
+
+Änderungen wirken sofort (kein Neustart nötig) und überstehen einen
+echten Neustart (gespeichert in `server/data/admin_settings.json`,
+dieselbe Datei wie alle anderen Fernwartungs-Einstellungen).
 
 ## Mehrere Personen (ein gemeinsamer Server, mehrere Tablets)
 
@@ -265,14 +354,19 @@ docs/           Architekturentscheidungen
 
 ## Eigene Modelle konfigurieren
 
-Persona-Modelle stehen in [`server/config.py`](server/config.py).
-Modellnamen müssen mit `ollama list` übereinstimmen bzw. vorher per
-`ollama pull <name>` geladen werden.
+Modell, Prompts, Stimmen und mehr lassen sich mittlerweile ohne
+Code-Änderung und ohne Neustart über den **Persona-Designer** ändern
+(siehe oben, `admin.html` bzw. `/admin/personas`-API) – der
+empfohlene Weg für alles außer der Ersteinrichtung.
 
-Jede Persona hat einen Namen und drei Text-/Stimm-Varianten
-(`neutral`/`weiblich`/`maennlich`); welche aktiv ist, steht pro
-Installation in `PERSONA_GENDER` in `server/config.py` (Default:
-`neutral`). Ändern = Wert eintragen, Server neu starten.
+Nur für den Bootstrap bzw. wer lieber direkt im Code arbeitet: die 4
+mitgelieferten Personas stehen als Ausgangswerte in
+[`server/config.py`](server/config.py). Modellnamen müssen mit
+`ollama list` übereinstimmen bzw. vorher per `ollama pull <name>`
+geladen werden. Jede Persona hat einen Namen und drei Text-/Stimm-
+Varianten (`neutral`/`weiblich`/`maennlich`); welche aktiv ist, lässt
+sich ebenfalls per Fernwartungs-API ändern (Beispiel siehe Abschnitt
+"Fernwartungs-API" oben, `persona-gender`).
 
 ## Neues Plugin hinzufügen
 

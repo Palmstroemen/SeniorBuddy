@@ -5,10 +5,10 @@ After=network.target
 [Service]
 Type=simple
 # Pfad anpassen, falls das Repo woanders liegt:
-WorkingDirectory=/opt/senior-companion/speech-service
+WorkingDirectory=/opt/SeniorBuddy/senior-companion/speech-service
 # Nur lokal erreichbar - ausschliesslich vom Chat-Server (server/)
 # aufgerufen, nie direkt von aussen.
-ExecStart=/opt/senior-companion/speech-service/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8100
+ExecStart=/opt/SeniorBuddy/senior-companion/speech-service/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8100
 Restart=on-failure
 RestartSec=5
 User=senior-companion
@@ -30,7 +30,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/senior-companion/speech-service/voices
+ReadWritePaths=/opt/SeniorBuddy/senior-companion/speech-service/voices
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
