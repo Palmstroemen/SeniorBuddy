@@ -2,7 +2,11 @@
 // (HTML/CSS/JS), nicht die Chat-Inhalte selbst - die kommen live
 // vom lokalen Server. Das reicht, damit die Seite als "App" installiert
 // werden kann und beim naechsten Start sofort erscheint.
-const CACHE_NAME = "senior-companion-shell-v1";
+// CACHE_NAME bei jeder inhaltlichen Aenderung an SHELL_FILES hochzaehlen
+// (v1 -> v2 -> ...) - sonst bedient der Service Worker nach einem
+// Deploy weiter aus dem alten Cache, ein einfaches Neuladen der Seite
+// reicht dann nicht, um Aenderungen sichtbar zu machen.
+const CACHE_NAME = "senior-companion-shell-v2";
 const SHELL_FILES = [
   "/",
   "/index.html",
@@ -21,11 +25,17 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
+    caches.keys()
+      .then((keys) =>
+        Promise.all(
+          keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
+        )
       )
-    )
+      // Ohne clients.claim() bleiben bereits offene Tabs beim alten
+      // Service Worker, bis sie geschlossen und neu geoeffnet werden -
+      // ein blosses Neuladen wuerde dann weiterhin die alte Version
+      // zeigen.
+      .then(() => self.clients.claim())
   );
 });
 
