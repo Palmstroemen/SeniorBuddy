@@ -1,7 +1,8 @@
 """
 Tests fuer server/admin_auth.py - die einzige Stelle im Projekt mit
-echter Authentifizierung. Fail-closed: ohne konfiguriertes Token
-antwortet die Admin-API mit 503 (nicht konfiguriert), nie offen.
+echter Authentifizierung. Bewusst NICHT fail-closed: ohne konfiguriertes
+Token bleibt die Admin-API waehrend der Entwicklung offen (Session-Notiz
+2026-09-22), erst ein gesetztes Token aktiviert die Pruefung.
 """
 import pytest
 from fastapi import Depends, FastAPI
@@ -21,11 +22,18 @@ def app_with_protected_route(monkeypatch):
     return app
 
 
-def test_no_token_configured_returns_503(app_with_protected_route, monkeypatch):
+def test_no_token_configured_allows_access(app_with_protected_route, monkeypatch):
+    monkeypatch.setattr(admin_auth, "ADMIN_TOKEN", "")
+    with TestClient(app_with_protected_route) as client:
+        r = client.get("/protected")
+    assert r.status_code == 200
+
+
+def test_no_token_configured_allows_access_even_with_garbage_header(app_with_protected_route, monkeypatch):
     monkeypatch.setattr(admin_auth, "ADMIN_TOKEN", "")
     with TestClient(app_with_protected_route) as client:
         r = client.get("/protected", headers={"Authorization": "Bearer irgendwas"})
-    assert r.status_code == 503
+    assert r.status_code == 200
 
 
 def test_missing_authorization_header_returns_401(app_with_protected_route, monkeypatch):

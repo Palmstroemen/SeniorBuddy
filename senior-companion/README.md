@@ -116,8 +116,10 @@ openssl rand -hex 32
 
 Als `SENIOR_COMPANION_ADMIN_TOKEN` setzen (`sudo systemctl edit
 senior-companion` → `Environment=SENIOR_COMPANION_ADMIN_TOKEN=<wert>`).
-Ohne gesetztes Token antwortet die gesamte `/admin/*`-API mit 503 –
-nie offen.
+**Solange kein Token gesetzt ist, bleibt die `/admin/*`-API bewusst
+offen** (Entwicklungskomfort, Stand 2026-09-22) – erst ein gesetztes
+Token aktiviert die Pruefung. Vor einem echten Einsatz außerhalb der
+Entwicklung sollte hier ein Token gesetzt werden.
 
 ```bash
 TOKEN="<dein-token>"
