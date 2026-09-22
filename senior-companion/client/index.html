@@ -13,6 +13,17 @@
 </head>
 <body>
 
+<!-- Startbildschirm: sichtbar bis loadPersonas() fertig ist (siehe
+     app.js) - ohne das waere in den ersten Sekunden eine leere
+     Personas-Leiste plus der irrefuehrende "Tippe unten etwas..."-
+     Hinweis zu sehen, obwohl noch gar nichts einsatzbereit ist. -->
+<div class="splash-overlay" id="splashOverlay">
+  <div class="splash-content">
+    <h1>Willkommen bei SeniorBuddy</h1>
+    <p>Einen Moment, wir bereiten alles vor …</p>
+  </div>
+</div>
+
 <header class="topbar">
   <nav class="persona-tabs" id="personaTabs" aria-label="Gesprächspartner wählen">
     <!-- wird per JS aus /api/personas befüllt -->

@@ -50,6 +50,49 @@ body {
   flex-direction: column;
 }
 
+/* --- Startbildschirm (siehe loadPersonas() in app.js) ------------- */
+
+.splash-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--paper);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+
+.splash-overlay[hidden] {
+  display: none;
+}
+
+.splash-content {
+  text-align: center;
+  padding: 0 24px;
+}
+
+.splash-content h1 {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.splash-content p {
+  color: var(--ink-soft);
+  font-size: 18px;
+  animation: splash-fade 1.6s ease-in-out infinite;
+}
+
+@keyframes splash-fade {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-content p { animation: none; }
+}
+
 /* --- Topbar / Persona-Tabs --------------------------------------- */
 
 .topbar {

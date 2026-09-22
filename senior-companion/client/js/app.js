@@ -84,6 +84,7 @@ const chatArea = document.getElementById("chatArea");
 const avatarStage = document.getElementById("avatarStage");
 const personaTabs = document.getElementById("personaTabs");
 const versionBadge = document.getElementById("versionBadge");
+const splashOverlay = document.getElementById("splashOverlay");
 const textInput = document.getElementById("textInput");
 const sendBtn = document.getElementById("sendBtn");
 const micBtn = document.getElementById("micBtn");
@@ -339,6 +340,7 @@ async function loadPersonas() {
   stageIdle();
   applyUiMode();
   connect();
+  splashOverlay.hidden = true;
 }
 
 // Klick auf ein Taskleisten-Icon spricht die Person an, statt die
