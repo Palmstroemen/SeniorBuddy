@@ -237,6 +237,13 @@ body {
   animation: avatar-pulse 1.6s ease-in-out infinite;
   outline: 4px solid var(--avatar-color);
   outline-offset: 4px;
+  /* Nutzer-Beobachtung: gelegentlich ein duennes Faden-
+     kreuz-Artefakt waehrend des Pulsierens (vermutlich ein GPU-
+     Compositor-Nahtfehler bei der Transform-Skalierung, in eigener
+     Untersuchung per Screenshot nicht reproduzierbar). will-change
+     gibt dem Browser vorab einen eigenen Compositor-Layer, gaengige
+     Abhilfe fuer genau diese Symptom-Klasse. */
+  will-change: transform;
 }
 
 .avatar-full-name {
@@ -246,8 +253,10 @@ body {
 }
 
 @keyframes avatar-pulse {
+  /* Skalierungs-Ausschlag bewusst kleiner (war 1.045) - Nutzer-Vorschlag
+     als pragmatische Abhilfe gegen das Fadenkreuz-Artefakt oben. */
   0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.045); }
+  50% { transform: scale(1.025); }
 }
 
 @media (prefers-reduced-motion: reduce) {
