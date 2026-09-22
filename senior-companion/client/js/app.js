@@ -460,6 +460,10 @@ function sendMessage() {
   const text = textInput.value.trim();
   if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
   addBubble(text, "user");
+  // Unterbricht eine noch laufende Ansage sofort (auch mitten im Satz) -
+  // wer der Person gerade zuhoert, soll aufhoeren zu reden, sobald sie
+  // selbst etwas sagt, wie in einem echten Gespraech auch.
+  stopCurrentSpeech();
   if (currentPersona) {
     speakingPersona = null;
     renderAvatarStage();
