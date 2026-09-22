@@ -22,6 +22,13 @@ function loadSetting(key, fallback) {
 }
 let sttMode = loadSetting("senior_companion_stt_mode", "device");
 let ttsMode = loadSetting("senior_companion_tts_mode", "server");
+// Wie kleinteilig die Antwort an die Sprachausgabe gereicht wird,
+// waehrend das LLM noch weiterschreibt - "sentence" (Standard, ganze
+// Saetze, beste Betonung) oder eine Wortanzahl als String ("3","4","5"
+// usw., geringere Latenz bis zum ersten Ton, kann aber abgehackt
+// klingen). Bewusst experimentell umschaltbar (Transparenz-Panel), da
+// noch unklar ist, wie gut die Piper-Stimmen mit Haeppchen zurechtkommen.
+let ttsChunkMode = loadSetting("senior_companion_tts_chunk_mode", "sentence");
 // "avatar" (Standard) zeigt die Präsenz-Oberfläche, "text" das
 // bisherige Chat-Log. Der frühere Stil-Umschalter (Strichmännchen/
 // Flächig) ist mit den Strichgesicht-Avataren entfallen - es gibt nur
@@ -364,6 +371,11 @@ function connect() {
   socket = new WebSocket(`${proto}://${location.host}/ws/room/${USER_ID}`);
 
   let assistantBubble = null;
+  // Wie weit assistantBubble.textContent bereits an die Sprachausgabe
+  // gereicht wurde (siehe speakReadyChunks() unten) - satzweises/
+  // haeppchenweises Streaming braucht einen Merker, damit derselbe Text
+  // nicht mehrfach eingereiht wird.
+  let spokenOffset = 0;
 
   socket.addEventListener("message", (event) => {
     const msg = JSON.parse(event.data);
@@ -374,6 +386,11 @@ function connect() {
       }
       if (!assistantBubble) {
         assistantBubble = addBubble("", "assistant", currentPersona);
+        spokenOffset = 0;
+        // Neue, eigenstaendige Aeusserung - alles vorher noch
+        // Wartende/Laufende verwerfen (z.B. ein Auto-Turn, der gerade
+        // noch abgespielt wurde).
+        stopCurrentSpeech();
       }
       assistantBubble.textContent += msg.content;
       chatArea.scrollTop = chatArea.scrollHeight;
@@ -384,12 +401,15 @@ function connect() {
       speakingPersona = currentPersona;
       markPersonaPresentOnStage(currentPersona);
       renderAvatarStage();
+      spokenOffset = speakReadyChunks(assistantBubble.textContent, spokenOffset, false);
     } else if (msg.type === "done") {
       if (msg.persona) currentPersona = msg.persona;
       markPersonaActive(currentPersona);
       markPersonaPresentOnStage(currentPersona);
       renderAvatarStage();
-      if (assistantBubble) speak(assistantBubble.textContent);
+      if (assistantBubble) {
+        spokenOffset = speakReadyChunks(assistantBubble.textContent, spokenOffset, true);
+      }
       assistantBubble = null;
     } else if (msg.type === "presence") {
       applyPresenceFromServer(msg.present || []);
@@ -551,15 +571,73 @@ function scheduleStageSafetyNet(text) {
   return () => clearTimeout(timer);
 }
 
-// Es kann jeweils nur EINE Ansage gleichzeitig laufen - ohne das wuerde
-// z.B. ein Auto-Turn, der kurz nach einer noch laufenden Antwort
-// eintrifft, seine Ausgabe einfach parallel starten (beide Geraete-
-// Stimme UND Server-Audio kennen von sich aus keine gemeinsame
-// Warteschlange). stopCurrentSpeech() wird darum am Anfang JEDER neuen
-// Ansage aufgerufen, unabhaengig vom Modus.
+// --- Satzweises/haeppchenweises TTS-Streaming --------------------------
+//
+// Ziel: die Sprachausgabe muss nicht auf die komplette Antwort warten -
+// sobald ein Haeppchen (Satz oder feste Wortanzahl, siehe ttsChunkMode)
+// fertig ist, geht es schon an die Sprachausgabe, waehrend das LLM den
+// Rest noch generiert. Eine Antwort besteht dadurch aus mehreren
+// Haeppchen, die der Reihe nach (nicht ueberlappend, aber auch ohne
+// sich gegenseitig abzubrechen) abgespielt werden muessen - anders als
+// eine wirklich NEUE, unabhaengige Aeusserung (z.B. ein Auto-Turn kurz
+// nach einer noch laufenden Antwort), die alles Vorherige verwerfen
+// soll. Deshalb zwei getrennte Mechanismen: enqueueSpeech() reiht ein
+// Haeppchen OHNE Abbruch ein, stopCurrentSpeech() leert dagegen alles
+// (wird nur beim Start einer neuen Sprechblase aufgerufen, siehe
+// connect()'s "token"-Handler).
+
+// Sucht ab fromOffset das naechste VOLLSTAENDIGE Haeppchen in text -
+// verlangt bei beiden Modi ein echtes, bereits eingetroffenes
+// Leerzeichen NACH der Grenze (nicht nur "Text endet gerade hier"),
+// sonst wuerde ein Satz/Wort faelschlich als fertig gelten, nur weil
+// das naechste Token noch nicht angekommen ist. Den letzten,
+// unvollstaendigen Rest holt sich speakReadyChunks() beim "done"-Flush.
+function findNextChunkBoundary(text, fromOffset) {
+  const remaining = text.slice(fromOffset);
+  if (ttsChunkMode === "sentence") {
+    const match = remaining.match(/^[\s\S]*?[.!?]+\s+/);
+    if (!match) return null;
+    return fromOffset + match[0].length;
+  }
+  const wordsNeeded = Number(ttsChunkMode);
+  if (!Number.isFinite(wordsNeeded) || wordsNeeded <= 0) return null;
+  const words = remaining.match(/\S+\s+/g);
+  if (!words || words.length < wordsNeeded) return null;
+  return fromOffset + words.slice(0, wordsNeeded).join("").length;
+}
+
+// Reiht alle seit fromOffset neu vollstaendig gewordenen Haeppchen ein;
+// bei flush=true (beim "done") wird zusaetzlich ein etwaiger Rest ohne
+// abschliessendes Leerzeichen/Satzzeichen als letztes Haeppchen
+// eingereiht. Gibt den neuen "bereits eingereiht bis"-Offset zurueck.
+function speakReadyChunks(text, fromOffset, flush) {
+  let offset = fromOffset;
+  for (;;) {
+    const boundary = findNextChunkBoundary(text, offset);
+    if (boundary === null) break;
+    enqueueSpeech(text.slice(offset, boundary));
+    offset = boundary;
+  }
+  if (flush && offset < text.length) {
+    enqueueSpeech(text.slice(offset));
+    offset = text.length;
+  }
+  return offset;
+}
+
 let currentAudio = null;
+const speechQueue = [];
+let queueRunning = false;
+
+// Wettlauf-Schutz, analog zum bisherigen Mechanismus: jedes Haeppchen
+// merkt sich seine Generation und bricht still ab, falls
+// stopCurrentSpeech() inzwischen (waehrend eines fetch()-Wartens)
+// eine neue Generation begonnen hat.
+let speechGeneration = 0;
 
 function stopCurrentSpeech() {
+  speechGeneration++;
+  speechQueue.length = 0;
   window.speechSynthesis?.cancel();
   if (currentAudio) {
     currentAudio.pause();
@@ -567,73 +645,82 @@ function stopCurrentSpeech() {
   }
 }
 
-// Wettlauf-Schutz: waehrend speak() im Server-Modus auf fetch("/api/tts")
-// wartet, kann laengst eine NEUERE Ansage gestartet worden sein (z.B.
-// eine echte Antwort, waehrend noch ein Auto-Turn unterwegs war).
-// stopCurrentSpeech() findet in diesem Moment nichts zum Abbrechen, da
-// die aeltere Anfrage noch gar keine Audio-Wiedergabe begonnen hat -
-// ohne diesen Zaehler wuerde sie verspaetet trotzdem noch abspielen,
-// obwohl sie laengst ueberholt ist. Jeder speak()-Aufruf merkt sich
-// seine eigene Generation und bricht nach dem Warten still ab, falls
-// inzwischen eine neuere begonnen hat.
-let speechGeneration = 0;
-
-async function speak(text) {
-  const myGeneration = ++speechGeneration;
-  stopCurrentSpeech();
-  if (!text) {
-    clearSpeakingAndRender();
-    return;
-  }
-  if (ttsMode === "server") {
-    const start = performance.now();
-    try {
-      const res = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, persona_id: currentPersona }),
-      });
-      if (!res.ok) throw new Error("Sprachdienst antwortete mit Fehler");
-      const blob = await res.blob();
-      if (myGeneration !== speechGeneration) return; // laengst ueberholt
-      const seconds = ((performance.now() - start) / 1000).toFixed(1);
-      showLatencyNotice(`Sprachausgabe (Server): ${seconds}s`);
-      const audio = new Audio(URL.createObjectURL(blob));
-      currentAudio = audio;
-      speakingPersona = currentPersona;
-      renderAvatarStage();
-      const clearSafetyNet = scheduleStageSafetyNet(text);
-      audio.addEventListener("ended", () => {
-        if (currentAudio === audio) currentAudio = null;
-        clearSafetyNet();
-        clearSpeakingAndRender();
-      });
-      audio.play();
-    } catch (err) {
-      if (myGeneration !== speechGeneration) return; // laengst ueberholt
-      // Stiller Fallback aufs Geraet - die Antwort soll trotzdem
-      // hoerbar sein, auch wenn der Sprachdienst gerade nicht laeuft.
-      speakOnDevice(text);
-    }
-    return;
-  }
-  speakOnDevice(text);
+function enqueueSpeech(text) {
+  if (!text || !text.trim()) return;
+  speechQueue.push({ text, generation: speechGeneration });
+  if (!queueRunning) runSpeechQueue();
 }
 
-function speakOnDevice(text) {
-  if (!window.speechSynthesis || !text) {
-    clearSpeakingAndRender();
-    return;
+async function runSpeechQueue() {
+  queueRunning = true;
+  while (speechQueue.length > 0) {
+    const item = speechQueue.shift();
+    if (item.generation !== speechGeneration) continue; // laengst ueberholt
+    await speakChunk(item.text, item.generation);
   }
-  const utter = new SpeechSynthesisUtterance(text);
-  utter.lang = "de-AT";
-  speakingPersona = currentPersona;
-  renderAvatarStage();
-  const clearSafetyNet = scheduleStageSafetyNet(text);
-  const finish = () => { clearSafetyNet(); clearSpeakingAndRender(); };
-  utter.addEventListener("end", finish);
-  utter.addEventListener("error", finish);
-  window.speechSynthesis.speak(utter);
+  queueRunning = false;
+  clearSpeakingAndRender();
+}
+
+function speakChunk(text, myGeneration) {
+  if (ttsMode === "server") return speakChunkOnServer(text, myGeneration);
+  return speakChunkOnDevice(text, myGeneration);
+}
+
+async function speakChunkOnServer(text, myGeneration) {
+  const start = performance.now();
+  try {
+    const res = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, persona_id: currentPersona }),
+    });
+    if (!res.ok) throw new Error("Sprachdienst antwortete mit Fehler");
+    const blob = await res.blob();
+    if (myGeneration !== speechGeneration) return; // ueberholt waehrend des Wartens
+    const seconds = ((performance.now() - start) / 1000).toFixed(1);
+    showLatencyNotice(`Sprachausgabe (Server): ${seconds}s`);
+    await playAudio(new Audio(URL.createObjectURL(blob)), text, myGeneration);
+  } catch (err) {
+    if (myGeneration !== speechGeneration) return; // ueberholt waehrend des Wartens
+    // Stiller Fallback aufs Geraet - das Haeppchen soll trotzdem
+    // hoerbar sein, auch wenn der Sprachdienst gerade nicht laeuft.
+    await speakChunkOnDevice(text, myGeneration);
+  }
+}
+
+function playAudio(audio, text, myGeneration) {
+  return new Promise((resolve) => {
+    if (myGeneration !== speechGeneration) { resolve(); return; }
+    currentAudio = audio;
+    speakingPersona = currentPersona;
+    renderAvatarStage();
+    const clearSafetyNet = scheduleStageSafetyNet(text);
+    audio.addEventListener("ended", () => {
+      if (currentAudio === audio) currentAudio = null;
+      clearSafetyNet();
+      resolve();
+    });
+    audio.play();
+  });
+}
+
+function speakChunkOnDevice(text, myGeneration) {
+  return new Promise((resolve) => {
+    if (!window.speechSynthesis || !text || myGeneration !== speechGeneration) {
+      resolve();
+      return;
+    }
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = "de-AT";
+    speakingPersona = currentPersona;
+    renderAvatarStage();
+    const clearSafetyNet = scheduleStageSafetyNet(text);
+    const finish = () => { clearSafetyNet(); resolve(); };
+    utter.addEventListener("end", finish);
+    utter.addEventListener("error", finish);
+    window.speechSynthesis.speak(utter);
+  });
 }
 
 // --- Transparenz-Panel -------------------------------------------------
@@ -646,6 +733,7 @@ document.getElementById("panelClose").addEventListener("click", () => {
 
 const sttModeSelect = document.getElementById("sttModeSelect");
 const ttsModeSelect = document.getElementById("ttsModeSelect");
+const ttsChunkModeSelect = document.getElementById("ttsChunkModeSelect");
 const uiModeSelect = document.getElementById("uiModeSelect");
 sttModeSelect.addEventListener("change", (e) => {
   sttMode = e.target.value;
@@ -654,6 +742,10 @@ sttModeSelect.addEventListener("change", (e) => {
 ttsModeSelect.addEventListener("change", (e) => {
   ttsMode = e.target.value;
   localStorage.setItem("senior_companion_tts_mode", ttsMode);
+});
+ttsChunkModeSelect.addEventListener("change", (e) => {
+  ttsChunkMode = e.target.value;
+  localStorage.setItem("senior_companion_tts_chunk_mode", ttsChunkMode);
 });
 uiModeSelect.addEventListener("change", (e) => {
   uiMode = e.target.value;
@@ -666,6 +758,7 @@ async function openPanel() {
   document.getElementById("panelUser").textContent = `Profil auf diesem Gerät: ${USER_ID}`;
   sttModeSelect.value = sttMode;
   ttsModeSelect.value = ttsMode;
+  ttsChunkModeSelect.value = ttsChunkMode;
   uiModeSelect.value = uiMode;
 
   const logRes = await fetch(`/api/transparency/${USER_ID}`);
