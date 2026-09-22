@@ -6,7 +6,7 @@
 // (v1 -> v2 -> ...) - sonst bedient der Service Worker nach einem
 // Deploy weiter aus dem alten Cache, ein einfaches Neuladen der Seite
 // reicht dann nicht, um Aenderungen sichtbar zu machen.
-const CACHE_NAME = "senior-companion-shell-v2";
+const CACHE_NAME = "senior-companion-shell-v3";
 const SHELL_FILES = [
   "/",
   "/index.html",
