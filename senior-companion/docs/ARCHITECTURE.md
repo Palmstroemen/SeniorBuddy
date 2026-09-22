@@ -57,6 +57,10 @@ nur im Chat-Verlauf existieren.
   Standard-Fallback, beides ist pro Tablet umschaltbar. Ein echter
   WASM-Weg direkt im Browser bleibt eine Option, falls beide Server
   irgendwann nicht mehr ausreichen.
+- **Kontinuierliches, vorausschauendes Sprechen** (spekulative
+  Satz-für-Satz-Generierung mit Vorrats-Puffer, verzweigte
+  Vorausberechnung, Antwort-Bausteine mit Lücken) – ausführlich unter
+  "Vision: Kontinuierliches, vorausschauendes Sprechen" weiter unten.
 
 ## Warum Ollama statt direkt llama.cpp?
 
@@ -151,6 +155,89 @@ mitgeliefert – Download-Hinweis in README.md).
 Umschaltbar pro Tablet (`localStorage`, wie die `?user=`-Geräte-Identität),
 nicht pro Installation – die Tablets sind unterschiedlich leistungsstark,
 die Entscheidung ist also wirklich pro Gerät sinnvoll, nicht global.
+
+## Vision: Kontinuierliches, vorausschauendes Sprechen (noch nicht gebaut)
+
+Aus einer langen Gesprächs-Session (2026-09-22) entstanden, ausgelöst
+durch reale Wiederholungs-/Latenzprobleme bei den Auto-Turns (siehe
+`server/main.py::_too_similar_to_own_recent`, `_first_sentence` –
+symptomatische Fixes, die zum Auslöser dieser Vision wurden). Noch
+nicht geplant oder gebaut – hier bewusst als zusammenhängender Entwurf
+festgehalten, damit er griffbereit ist, sobald er angegangen wird.
+Konkrete Beispiel-Dialoge, die die gewünschte Tonalität zeigen, liegen
+unter `/Beispieltexte/` (Repo-Root, ausserhalb von `senior-companion/`)
+– `Wohnort.md`, `Beziehungsstatus.md`, `Politik.md`, wachsend.
+
+**Das Grundproblem mit dem heutigen Modell:** `room_chat()` generiert
+reaktiv – entweder auf eine echte Nutzer-Nachricht hin, oder alle
+`autoturn.SHORT_PAUSE_SECONDS` per Tick-Check. Zwischen "die Person
+schweigt" und "die Persona sagt etwas" liegt darum immer eine spürbare
+Lücke, und jede Generierung startet bei Null, ohne Vorlauf.
+
+**Die Idee: Generierung und Zustellung sind zwei getrennte Schichten.**
+Wie beim Schach, wo man mehrere Züge vorausdenkt: der Textgenerator
+läuft praktisch durchgehend und geht erst dann in einen Ruhezustand,
+wenn ein Vorrat (Richtwert: ~5 Sätze) an vorbereiteten Sätzen aufgebaut
+ist – nicht getriggert durch Stille, sondern durch einen vollen
+Vorrats-Speicher. Ein separater "Regisseur" entscheidet, WANN aus
+diesem Vorrat tatsächlich gesprochen wird (z. B. eine kurze
+Atempause nach einer Frage, damit die Person antworten kann) – die
+Generierung selbst wartet darauf nie.
+
+**Verzweigte Vorausberechnung statt linearer Vorbereitung:**
+- Bei einer Ja/Nein-Frage werden **beide** möglichen Fortsetzungen
+  vorbereitet, bevor die Frage überhaupt zu Ende gesprochen ist.
+- Bei offenen Fragen (z. B. einem Namen) wird ein **Antwort-Textbaustein
+  mit Lücke** vorbereitet und größtenteils schon vorab vertont; nur das
+  fehlende Stück (der Name) muss nach dem Hören noch synthetisiert und
+  eingefügt werden. Beispiel (Wortlaut aus dem Gespräch):
+  - Frage: "Wie heißt denn das Enkelchen?"
+  - Vorbereiteter Baustein: "`<name>`! Was für ein netter Name! Habe
+    ich es richtig erfasst? `<name>` heißt das Kind?"
+  - Sogar `<name>` selbst wird vorsorglich in zwei Betonungs-Varianten
+    vorgerendert (einmal freudig erregt, einmal nüchterner), damit das
+    zusammengesetzte Ergebnis trotzdem stimmig klingt, ganz ohne
+    Synthese-Umweg im kritischen Moment.
+  - Parallel läuft die Generierung schon weiter voraus: die nächste
+    Frage ("Ist das ein Bub oder ein Mädchen? ... Ah ein
+    `<Bub/Mädchen>`! ...") wird bereits vorbereitet, inklusive beider
+    aufzählbarer Werte für die Lücke.
+- **Regional-/Dialekt-bewusstes Vokabular:** "Bub" (Österreich) vs.
+  "Junge" (Deutschland) wurde als konkretes Beispiel genannt – die
+  Bausteine/Lücken-Füllungen müssen wissen, in welcher
+  deutschsprachigen Region die Person lebt, statt ein festes
+  Standarddeutsch anzunehmen. Wie diese Information erfasst wird
+  (neuer Fakt? aus der Sprachverwendung abgeleitet?) ist noch offen.
+
+**Verwerfen ist ein akzeptierter Preis, kein Problem.** Antwortet die
+Person und lenkt das Gespräch in eine andere Richtung, wird ein
+relevanter Teil des bereits generierten (und teils schon vertonten)
+Vorrats einfach verworfen. Das ist im Modell so vorgesehen, nicht ein
+Zeichen für Verschwendung, die es zu vermeiden gilt.
+
+**Messbarkeit von Anfang an mitbauen, nicht nachträglich.** Damit sich
+die Vorrats-Tiefe (Richtwert 5 Sätze) tatsächlich begründen lässt statt
+geraten zu werden: mitloggen, wie viel vorausberechnet und wie viel
+davon verworfen wird, und vor allem, wie oft der 2., 3., 4., 5.
+vorausberechnete Satz tatsächlich noch zum Einsatz kommt, bevor eine
+echte Antwort dazwischenkommt. Kommt der 5.-Satz-Vorrat z. B. nur in
+~5 % der Fälle tatsächlich zum Einsatz, lohnt sich diese Tiefe nicht;
+liegt die Quote eher bei 20–30 %, schon. Diese Kennzahl entscheidet
+die Tuning-Frage empirisch statt aus dem Bauch heraus.
+
+**Charakter/Ton-Prinzip, das hier mit hineinspielt** (siehe
+`Beispieltexte/`): Personas dürfen herausfordernd, frech oder kantig
+sein – ausdrücklich gewünscht, nicht nur toleriert, solange die Person
+die Persona trotzdem sympathisch findet. Wird später vermutlich zu
+einstellbaren Parametern pro Persona (ähnlich `reengagement_tendency`),
+nicht zu einem einheitlichen "immer bravem" Standardton.
+
+**Einordnung:** das ist ein System-Umbau, kein Prompt-Tweak – ein vom
+Sende-/Tick-Zyklus entkoppelter Hintergrund-Generierungs-Loop,
+abbrechbare In-Flight-Arbeit, eine klare Trennung zwischen
+Generierungs- und Zustellungs-Pipeline, plus das Baustein-/Lücken-
+System für Antwortvorlagen. Entsprechend als eigene, größere
+Planungsrunde zu behandeln, nicht nebenbei mitzuerledigen.
 
 ## Fernwartungs-API (`/admin/*`)
 
