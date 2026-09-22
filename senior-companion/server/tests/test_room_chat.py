@@ -294,6 +294,90 @@ def test_room_chat_auto_turn_suppressed_when_too_similar_to_own_last_message(
     assert sum(1 for m in stored if m["content"] == repeated_text) == 1
 
 
+def test_room_chat_auto_turn_suppressed_when_same_theme_different_words(
+    monkeypatch, _fast_autoturn_timing,
+):
+    """Live beobachtet (2026-09-22): die erste Fassung der Aehnlichkeits-
+    Sicherung (Schwelle 0.75) liess Wiederholungen durch, die zwar
+    lexikalisch anders formuliert waren, aber thematisch dieselbe Leier
+    blieben (z.B. 'Blumenbeete' vs. 'ein bestimmtes Springbrunnen' als
+    zwei Varianten derselben Garten-Nachfrage, ~0.52 Aehnlichkeit statt
+    der frueher geforderten 0.75). Reale Formulierungen als
+    Regressionswaechter fuer die abgesenkte Schwelle."""
+    prior_text = (
+        "Oh, das klingt schön! Haben Sie vielleicht die Blumenbeete "
+        "oder ein bestimmtes Springbrunnen im Sinn?"
+    )
+    new_text = (
+        "Vielleicht der Rosenstrauch am Eingang, oder war es eher die "
+        "Bank unter dem Baum?"
+    )
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield new_text
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.0)
+    room.touch("auto_user_repeat2", "freundin")
+    memory.add_message("auto_user_repeat2", "freundin", "assistant", prior_text)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/auto_user_repeat2") as ws:
+            deadline = time.time() + (autoturn.COMFORT_WINDOW_SECONDS + 0.3)
+            saw_auto_done = False
+            while time.time() < deadline:
+                msg = _receive_json_with_timeout(ws, 0.1)
+                if msg is not None and msg.get("type") == "done" and msg.get("auto"):
+                    saw_auto_done = True
+                    break
+
+    assert saw_auto_done is False
+
+
+def test_room_chat_auto_turn_suppressed_when_only_opening_sentence_repeats(
+    monkeypatch, _fast_autoturn_timing,
+):
+    """Live beobachtet (2026-09-22): ein Auto-Turn begann zweimal mit
+    demselben Einstiegssatz ('Ach, der Dobelhofpark, da ist es
+    wirklich schön, oder?'), variierte aber danach genug, dass die
+    Gesamt-Aehnlichkeit unter AUTO_TURN_SIMILARITY_THRESHOLD faellt
+    (~0.30 hier) - der wiedererkennbare Einstieg allein haette das
+    Wiederholungsgefuehl trotzdem ausgeloest. Deckt
+    AUTO_TURN_OPENER_SIMILARITY_THRESHOLD ab."""
+    prior_text = (
+        "Ach, der Dobelhofpark, da ist es wirklich schön, oder? Früher "
+        "bin ich oft dort spazieren gegangen, aber in letzter Zeit ist "
+        "es mir etwas mühsamer gefallen."
+    )
+    new_text = (
+        "Ach, der Dobelhofpark, da ist es wirklich schön, oder? "
+        "Wissen Sie, ich hab neulich gehört, dass dort im Sommer "
+        "manchmal ein kleiner Flohmarkt stattfindet, mit allerlei "
+        "hübschen alten Sachen und handgemachten Dingen von Leuten aus "
+        "der Nachbarschaft."
+    )
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield new_text
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.0)
+    room.touch("auto_user_repeat3", "freundin")
+    memory.add_message("auto_user_repeat3", "freundin", "assistant", prior_text)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/auto_user_repeat3") as ws:
+            deadline = time.time() + (autoturn.COMFORT_WINDOW_SECONDS + 0.3)
+            saw_auto_done = False
+            while time.time() < deadline:
+                msg = _receive_json_with_timeout(ws, 0.1)
+                if msg is not None and msg.get("type") == "done" and msg.get("auto"):
+                    saw_auto_done = True
+                    break
+
+    assert saw_auto_done is False
+
+
 def test_room_chat_second_consecutive_auto_turn_switches_topic_prompt(
     monkeypatch, _fast_autoturn_timing,
 ):
@@ -305,17 +389,22 @@ def test_room_chat_second_consecutive_auto_turn_switches_topic_prompt(
     # Unterschied - sonst schlaegt die eigene Aehnlichkeits-Sicherung
     # (_too_similar_to_own_recent) selbst an und unterdrueckt den zweiten
     # Auto-Turn, bevor ueberhaupt geprueft werden kann, welcher Prompt
-    # verwendet wurde.
+    # verwendet wurde. Modulo-Indexierung statt fixer Listenlaenge: bei
+    # den winzigen Test-Zeitfenstern (_fast_autoturn_timing) kann noch
+    # ein dritter Auto-Turn (kind="wrapup", WRAPUP_WINDOW_SECONDS lief
+    # in der Zwischenzeit ab) dazwischenfunken, bevor der Test seine
+    # beiden erwarteten "done"-Nachrichten gelesen hat.
     replies = [
         "Ich hab heute an meinen alten Schulfreund gedacht.",
         "Wissen Sie, gestern hab ich ein spannendes Buch entdeckt.",
+        "Heute ist ein wirklich schoener Tag, finden Sie nicht?",
     ]
     captured_auto_prompts = []
     counter = {"n": 0}
 
     async def fake_stream(model, system_prompt, messages, max_tokens=400):
         captured_auto_prompts.append(messages[-1]["content"])
-        reply = replies[counter["n"]]
+        reply = replies[counter["n"] % len(replies)]
         counter["n"] += 1
         yield reply
 
@@ -323,10 +412,17 @@ def test_room_chat_second_consecutive_auto_turn_switches_topic_prompt(
     monkeypatch.setattr(autoturn.random, "random", lambda: 0.0)  # immer fortsetzen
     room.touch("auto_user_topic", "freundin")
 
+    # Bounded gepollt statt blockierend auf zwei "done"-Nachrichten zu
+    # warten: bei den winzigen Test-Zeitfenstern kann ein Auto-Turn
+    # durch die Aehnlichkeits-Sicherung unterdrueckt werden (kein
+    # "done" dafuer) - ein blockierendes _drain_until() haette dann
+    # fuer immer gewartet, obwohl fake_stream laengst oft genug
+    # aufgerufen wurde.
     with TestClient(main.app) as client:
         with client.websocket_connect("/ws/room/auto_user_topic") as ws:
-            _drain_until(ws, lambda m: m.get("type") == "done" and m.get("auto"))
-            _drain_until(ws, lambda m: m.get("type") == "done" and m.get("auto"))
+            deadline = time.time() + (autoturn.WRAPUP_WINDOW_SECONDS + 0.5)
+            while time.time() < deadline and len(captured_auto_prompts) < 2:
+                _receive_json_with_timeout(ws, 0.05)
 
     assert len(captured_auto_prompts) >= 2
     assert captured_auto_prompts[0] == autoturn.AUTO_CONTINUE_PROMPT

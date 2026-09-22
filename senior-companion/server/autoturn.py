@@ -35,7 +35,13 @@ WRAPUP_WINDOW_SECONDS = 600.0
 
 # Sicherheitsnetz-Deckel, NICHT der primaere Selbstbegrenzungs-
 # Mechanismus (das ist reengagement_tendency / should_continue unten).
-MAX_CONSECUTIVE_AUTO_TURNS = 4
+# War 4 - live beobachtet (2026-09-22), dass sich Auto-Turns trotz
+# Themenwechsel-Prompt und Aehnlichkeits-Sicherung (main.py) nach ein
+# paar Wiederholungen ins Belanglose ziehen. Niedriger gesetzt, damit
+# spaetestens nach 2 unaufgeforderten Aeusserungen wieder eine echte
+# Nutzer-Nachricht noetig ist, statt viermal am Stueck vor sich hin zu
+# reden.
+MAX_CONSECUTIVE_AUTO_TURNS = 2
 
 
 def decide_phase(elapsed_since_user: float, consecutive_auto_turns: int) -> str:
