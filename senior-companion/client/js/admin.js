@@ -249,12 +249,15 @@ logoutBtn.addEventListener("click", () => {
 
 async function init() {
   await loadFaceData();
-  const stored = localStorage.getItem(TOKEN_KEY);
-  if (stored) {
-    await tryLogin(stored);
-  } else {
-    showLoginView();
-  }
+  // Immer versuchen, auch OHNE hinterlegtes Token: solange der Server
+  // kein SENIOR_COMPANION_ADMIN_TOKEN konfiguriert hat (Entwicklungs-
+  // modus, siehe admin_auth.py), laesst er jede Anfrage durch,
+  // unabhaengig vom gesendeten Wert - der Login-Bildschirm soll dann
+  // gar nicht erst erscheinen. Ist serverseitig ein echtes Token
+  // gesetzt, schlaegt dieser Versuch normal mit 401 fehl und
+  // tryLogin() zeigt wie gewohnt den Login-Bildschirm.
+  const stored = localStorage.getItem(TOKEN_KEY) || "";
+  await tryLogin(stored);
 }
 
 // --- Listen-Ansicht ------------------------------------------------
