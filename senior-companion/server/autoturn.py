@@ -84,6 +84,26 @@ AUTO_CONTINUE_PROMPT = (
     "es kurz."
 )
 
+# Wird verwendet, wenn schon EIN vorheriger Auto-Turn in dieser
+# Stille-Phase keine echte Antwort der Person bekommen hat (siehe
+# room_chat()'s consecutive_auto_turns) - das aktuelle Thema zieht
+# offenbar nicht, wie in einem echten Gespraech probiert man dann
+# etwas anderes, statt beim selben Thema zu bleiben.
+AUTO_CONTINUE_NEW_TOPIC_PROMPT = (
+    "Die Person hat immer noch nichts gesagt, auch nicht auf deine "
+    "letzte eigene Aeusserung. Das aktuelle Thema regt sie offenbar "
+    "gerade nicht zum Antworten an. Wechsle jetzt bewusst zu einem "
+    "GANZ ANDEREN Gespraechsthema - nicht nur eine Umformulierung des "
+    "Gleichen, sondern wirklich etwas Neues (z.B. etwas anderes aus "
+    "deinem Alltag, eine Frage zu einem ganz anderen Bereich, oder "
+    "greife etwas aus einem frueheren Teil der Unterhaltung auf). "
+    "Erfinde dabei KEINE neuen Details, Angebote oder Erlebnisse, die "
+    "nicht schon vorkamen. Fordere die Person auch NICHT zu einer "
+    "bestimmten Reaktion auf. Faellt dir kein neues Thema ein, bleib "
+    "lieber ganz still (dann gib einfach gar nichts aus). Halte es "
+    "kurz."
+)
+
 AUTO_WRAPUP_PROMPT = (
     "Die Person hat sich schon eine Weile nicht mehr gemeldet - "
     "vermutlich ist sie eingeschlafen, hat den Raum verlassen oder ist "

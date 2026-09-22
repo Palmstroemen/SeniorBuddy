@@ -8,6 +8,7 @@ Voraussetzung: Ollama laeuft lokal und die in config.py referenzierten
 Modelle sind gepullt (siehe README.md).
 """
 import asyncio
+import difflib
 import logging
 import re
 import subprocess
@@ -692,9 +693,36 @@ async def run_turn(
 
 _AUTO_TURN_PROMPTS = {
     "continue": autoturn.AUTO_CONTINUE_PROMPT,
+    "continue_new_topic": autoturn.AUTO_CONTINUE_NEW_TOPIC_PROMPT,
     "wrapup": autoturn.AUTO_WRAPUP_PROMPT,
     "greeting": autoturn.GREETING_PROMPT,
 }
+
+# Wie aehnlich (0..1, difflib-Ratio) eine neu generierte Auto-Turn-
+# Aeusserung ihren eigenen letzten Aeusserungen sein darf, bevor sie
+# unterdrueckt wird - live beobachtet (2026-09-22): trotz expliziter
+# Prompt-Anweisung und einem groesseren Modell fielen Auto-Turns
+# wiederholt in fast wortgleiche Wiederholungen zurueck, vermutlich
+# durch die eigene Historie selbst verstaerkt. Ein deterministisches
+# Sicherheitsnetz, unabhaengig davon, wie gut das jeweilige Modell
+# Anweisungen befolgt.
+AUTO_TURN_SIMILARITY_THRESHOLD = 0.75
+AUTO_TURN_SIMILARITY_LOOKBACK = 3
+
+
+def _too_similar_to_own_recent(user_id: str, persona_id: str, candidate: str) -> bool:
+    """True, wenn candidate leer ist oder einer der letzten
+    AUTO_TURN_SIMILARITY_LOOKBACK eigenen (assistant-)Aeusserungen
+    dieser Persona bei dieser Person zu aehnlich ist."""
+    if not candidate.strip():
+        return True
+    recent = memory.recent_messages(user_id, persona_id, limit=20)
+    own_recent = [m["content"] for m in recent if m["role"] == "assistant"]
+    own_recent = own_recent[-AUTO_TURN_SIMILARITY_LOOKBACK:]
+    return any(
+        difflib.SequenceMatcher(None, candidate, prior).ratio() >= AUTO_TURN_SIMILARITY_THRESHOLD
+        for prior in own_recent
+    )
 
 
 async def run_auto_turn(
@@ -725,10 +753,12 @@ async def run_auto_turn(
     mitten im eigenen Stream.
 
     Gibt zurueck, ob der Auto-Turn tatsaechlich abgeschlossen wurde
-    (False bei Abbruch durch eine echte Senior-Anfrage anderswo - dann
-    wird nichts gespeichert, nichts gesendet, room.touch() NICHT
-    aufgerufen: ein abgebrochener Versuch zaehlt nicht als "hat
-    gesprochen")."""
+    (False bei Abbruch durch eine echte Senior-Anfrage anderswo, ODER
+    wenn die generierte Aeusserung sich zu aehnlich zu eigenen letzten
+    Aeusserungen erwiesen hat (siehe _too_similar_to_own_recent) - in
+    beiden Faellen wird nichts gespeichert, nichts gesendet, room.touch()
+    NICHT aufgerufen: ein unterdrueckter/abgebrochener Versuch zaehlt
+    nicht als "hat gesprochen")."""
     topic_for_tagging = memory.active_topic(user_id, persona.id)
 
     history = memory.recent_messages(user_id, persona.id, limit=20)
@@ -742,16 +772,17 @@ async def run_auto_turn(
 
     tokens: list[str] = []
 
+    # Bewusst NICHT live pro Token gesendet (anders als run_turn()): erst
+    # NACH der vollen Generierung wird geprueft, ob die Aeusserung
+    # ueberhaupt gesendet werden soll (siehe _too_similar_to_own_recent
+    # unten) - bereits live gestreamte Tokens liessen sich beim Client
+    # nicht mehr zurueckziehen.
     async def collect():
         async for token in llm_client.stream(
             persona.model, persona.system_prompt, chat_messages,
             max_tokens=persona.max_tokens,
         ):
             tokens.append(token)
-            await websocket.send_json({
-                "type": "token", "content": token, "persona": persona.id,
-                "auto": True,
-            })
 
     gen_task = asyncio.create_task(collect())
     priority.register_low_priority_task(gen_task)
@@ -763,6 +794,13 @@ async def run_auto_turn(
         priority.unregister_low_priority_task(gen_task)
 
     full_response = "".join(tokens)
+    if _too_similar_to_own_recent(user_id, persona.id, full_response):
+        return False
+
+    await websocket.send_json({
+        "type": "token", "content": full_response, "persona": persona.id,
+        "auto": True,
+    })
     room.touch(user_id, persona.id)
     master_id = memory.add_message(
         user_id, persona.id, "assistant", full_response, topic=topic_for_tagging,
@@ -869,8 +907,13 @@ async def room_chat(websocket: WebSocket, user_id: str):
                 last_active = {p: (room.last_active_ts(user_id, p) or 0.0) for p in candidates}
                 picked_id = director.pick_responder(candidates, None, last_active, time.time())
                 persona = PERSONAS.get(picked_id) or PERSONAS[FALLBACK_PERSONA]
+                # Ab dem ZWEITEN Auto-Turn in derselben Stille-Phase (die
+                # Person hat auf den ersten nicht reagiert) das Thema
+                # wechseln statt beim selben zu bleiben - siehe
+                # AUTO_CONTINUE_NEW_TOPIC_PROMPT.
+                continue_kind = "continue" if consecutive_auto_turns == 0 else "continue_new_topic"
                 completed = await run_auto_turn(
-                    user_id, persona, websocket, present, kind="continue",
+                    user_id, persona, websocket, present, kind=continue_kind,
                 )
                 if completed:
                     consecutive_auto_turns += 1

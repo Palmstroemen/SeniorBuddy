@@ -259,6 +259,80 @@ def test_room_chat_single_present_persona_auto_continues(monkeypatch, _fast_auto
     )
 
 
+def test_room_chat_auto_turn_suppressed_when_too_similar_to_own_last_message(
+    monkeypatch, _fast_autoturn_timing,
+):
+    """Live beobachtet (2026-09-22): trotz Prompt-Anweisung ("wiederhole
+    dich nicht") und groesserem Modell fiel ein Auto-Turn wiederholt in
+    fast wortgleiche eigene Wiederholungen zurueck - vermutlich verstaerkt
+    durch die eigene Historie. Ein deterministisches Sicherheitsnetz muss
+    das abfangen, unabhaengig davon, wie gut das Modell der Anweisung
+    folgt: eine zu aehnliche Antwort wird gar nicht erst gesendet oder
+    gespeichert."""
+    repeated_text = "Oh, das kann manchmal wirklich anstrengend sein, nicht wahr?"
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield repeated_text
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.0)  # immer versuchen fortzusetzen
+    room.touch("auto_user_repeat", "freundin")
+    memory.add_message("auto_user_repeat", "freundin", "assistant", repeated_text)
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/auto_user_repeat") as ws:
+            deadline = time.time() + (autoturn.COMFORT_WINDOW_SECONDS + 0.3)
+            saw_auto_done = False
+            while time.time() < deadline:
+                msg = _receive_json_with_timeout(ws, 0.1)
+                if msg is not None and msg.get("type") == "done" and msg.get("auto"):
+                    saw_auto_done = True
+                    break
+
+    assert saw_auto_done is False
+    stored = memory.recent_messages("auto_user_repeat", "freundin", limit=10)
+    assert sum(1 for m in stored if m["content"] == repeated_text) == 1
+
+
+def test_room_chat_second_consecutive_auto_turn_switches_topic_prompt(
+    monkeypatch, _fast_autoturn_timing,
+):
+    """Nutzer-Beobachtung (2026-09-22): das Auto-Turn-Modell blieb beim
+    selben Thema haengen, obwohl die Person nicht reagierte - wie in
+    einer echten Unterhaltung sollte ab dem zweiten erfolglosen Versuch
+    das Thema gewechselt werden, siehe AUTO_CONTINUE_NEW_TOPIC_PROMPT."""
+    # Bewusst komplett unterschiedliche Saetze statt nur einer Ziffer als
+    # Unterschied - sonst schlaegt die eigene Aehnlichkeits-Sicherung
+    # (_too_similar_to_own_recent) selbst an und unterdrueckt den zweiten
+    # Auto-Turn, bevor ueberhaupt geprueft werden kann, welcher Prompt
+    # verwendet wurde.
+    replies = [
+        "Ich hab heute an meinen alten Schulfreund gedacht.",
+        "Wissen Sie, gestern hab ich ein spannendes Buch entdeckt.",
+    ]
+    captured_auto_prompts = []
+    counter = {"n": 0}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured_auto_prompts.append(messages[-1]["content"])
+        reply = replies[counter["n"]]
+        counter["n"] += 1
+        yield reply
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.0)  # immer fortsetzen
+    room.touch("auto_user_topic", "freundin")
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/auto_user_topic") as ws:
+            _drain_until(ws, lambda m: m.get("type") == "done" and m.get("auto"))
+            _drain_until(ws, lambda m: m.get("type") == "done" and m.get("auto"))
+
+    assert len(captured_auto_prompts) >= 2
+    assert captured_auto_prompts[0] == autoturn.AUTO_CONTINUE_PROMPT
+    assert captured_auto_prompts[1] == autoturn.AUTO_CONTINUE_NEW_TOPIC_PROMPT
+
+
 def test_room_chat_persona_with_pending_secrecy_interaction_never_auto_picked(
     monkeypatch, _fast_autoturn_timing,
 ):
@@ -386,11 +460,23 @@ def test_room_chat_auto_turn_gate_uses_last_speakers_tendency_not_next_candidate
 
 def test_room_chat_real_message_resets_auto_turn_cadence(monkeypatch, _fast_autoturn_timing):
     call_count = 0
+    # Bewusst komplett unterschiedliche Saetze statt eines Zaehlers im
+    # Text - sonst erkennt _too_similar_to_own_recent (main.py) aufeinander
+    # folgende Auto-Turn-Antworten faelschlich als Wiederholung und
+    # unterdrueckt sie, wodurch der Test auf ein "done" wartet, das nie
+    # kommt.
+    replies = [
+        "Ich erinnere mich gerade an meine alte Nachbarin.",
+        "Wissen Sie, ich hab neulich ein interessantes Rezept gelesen.",
+        "Heute ist ein wirklich schoener Tag, finden Sie nicht?",
+        "Ich hab mich gerade gefragt, wie das Wetter bei Ihnen ist.",
+    ]
 
     async def fake_stream(model, system_prompt, messages, max_tokens=400):
         nonlocal call_count
+        reply = replies[call_count % len(replies)]
         call_count += 1
-        yield f"Antwort {call_count}"
+        yield reply
 
     monkeypatch.setattr(main.llm_client, "stream", fake_stream)
     monkeypatch.setattr(autoturn.random, "random", lambda: 0.0)
