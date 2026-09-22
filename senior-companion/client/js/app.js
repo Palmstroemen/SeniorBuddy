@@ -83,6 +83,7 @@ function applyPersonaColor(el, personaId) {
 const chatArea = document.getElementById("chatArea");
 const avatarStage = document.getElementById("avatarStage");
 const personaTabs = document.getElementById("personaTabs");
+const versionBadge = document.getElementById("versionBadge");
 const textInput = document.getElementById("textInput");
 const sendBtn = document.getElementById("sendBtn");
 const micBtn = document.getElementById("micBtn");
@@ -293,8 +294,23 @@ function applyUiMode() {
 
 // --- Personas laden und Tabs aufbauen -------------------------------
 
+// Kleine Versions-Anzeige oben neben den Personas - Abgleich per Auge,
+// ob der Browser gerade wirklich den erwarteten Stand zeigt (siehe
+// main.py's /api/version: der Wert steht beim Prozessstart fest, ein
+// blosses "git pull" ohne Neustart aendert ihn nicht). Absichtlich
+// leise scheiternd (kein Abbruch), falls /api/version aelter/fehlt.
+async function loadVersionBadge() {
+  try {
+    const res = await fetch("/api/version");
+    const { commit } = await res.json();
+    versionBadge.textContent = commit;
+  } catch (err) {
+    versionBadge.textContent = "";
+  }
+}
+
 async function loadPersonas() {
-  const [res] = await Promise.all([fetch("/api/personas"), loadFaceData()]);
+  const [res] = await Promise.all([fetch("/api/personas"), loadFaceData(), loadVersionBadge()]);
   const personas = await res.json();
   personaTabs.innerHTML = "";
   personas.forEach((p) => {

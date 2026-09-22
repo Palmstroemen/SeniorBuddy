@@ -136,6 +136,14 @@ body {
   height: 54px;
 }
 
+.version-badge {
+  flex-shrink: 0;
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--ink-soft);
+  opacity: 0.6;
+}
+
 .transparency-btn {
   font-size: 24px;
   background: none;
