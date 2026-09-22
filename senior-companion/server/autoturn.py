@@ -14,7 +14,11 @@ Sicherheitsnetz, kein primaerer Mechanismus (siehe Projektgedaechtnis:
 Text-Stopp-Phrasen wurden bewusst als "zu fragil fuer kleine lokale
 Modelle" verworfen).
 """
+import difflib
 import random
+import re
+
+import memory
 
 # Admin-ueberschreibbar (siehe main.py::_apply_persisted_admin_settings,
 # Muster identisch zu satisfaction.CHECKIN_INTERVAL_DAYS).
@@ -130,3 +134,69 @@ GREETING_PROMPT = (
     "passt (z.B. erzaehl kurz etwas von dir oder frag freundlich, wie es "
     "ihr geht). Halte es kurz und einladend."
 )
+
+AUTO_TURN_PROMPTS = {
+    "continue": AUTO_CONTINUE_PROMPT,
+    "continue_new_topic": AUTO_CONTINUE_NEW_TOPIC_PROMPT,
+    "wrapup": AUTO_WRAPUP_PROMPT,
+    "greeting": GREETING_PROMPT,
+}
+
+# Wie aehnlich (0..1, difflib-Ratio) eine neu generierte Auto-Turn-
+# Aeusserung ihren eigenen letzten Aeusserungen sein darf, bevor sie
+# unterdrueckt wird - live beobachtet (2026-09-22): trotz expliziter
+# Prompt-Anweisung und einem groesseren Modell fielen Auto-Turns
+# wiederholt in fast wortgleiche Wiederholungen zurueck, vermutlich
+# durch die eigene Historie selbst verstaerkt. Ein deterministisches
+# Sicherheitsnetz, unabhaengig davon, wie gut das jeweilige Modell
+# Anweisungen befolgt.
+#
+# 0.75 war zu lasch: ein echtes Beispiel ("Blumenbeete" vs. "ein
+# bestimmtes Springbrunnen" als Garten-Variation derselben Masche) lag
+# nur bei ~0.52 Aehnlichkeit - lexikalisch verschieden, thematisch
+# aber dieselbe Wiederholung. difflib misst Zeichenketten-, keine
+# Bedeutungs-Aehnlichkeit, daher als grobe Kalibrierung gemessen:
+# unterschiedliches Thema ~0.24, gleiches Thema/andere Worte ~0.39,
+# das reale Beispiel ~0.52. 0.35 faengt beide Wiederholungsfaelle ab,
+# ohne echte Themenwechsel zu blockieren.
+AUTO_TURN_SIMILARITY_THRESHOLD = 0.35
+AUTO_TURN_SIMILARITY_LOOKBACK = 5
+
+# Zusaetzliche, gezielte Pruefung NUR auf den ersten Satz: live
+# beobachtet (2026-09-22), dass ein Auto-Turn immer mit demselben
+# Einstiegssatz begann ("Ach, der Dobelhofpark, da ist es wirklich
+# schön, oder?"), aber gegen Ende variierte - das verduennt die
+# Gesamt-Aehnlichkeit (AUTO_TURN_SIMILARITY_THRESHOLD) unter die
+# Schwelle, obwohl der wiedererkennbare Teil identisch blieb. Eigene,
+# strengere Schwelle nur fuer den ersten Satz (kalibriert: exakt
+# gleicher Einstieg = 1.0, leicht umformuliert ~0.75, anderes Thema
+# ~0.24 - 0.55 faengt beide Wiederholungsfaelle, nicht echte
+# Themenwechsel).
+AUTO_TURN_OPENER_SIMILARITY_THRESHOLD = 0.55
+
+
+def _first_sentence(text: str) -> str:
+    match = re.match(r"^[\s\S]*?[.!?]+", text)
+    return match.group(0) if match else text
+
+
+def too_similar_to_own_recent(user_id: str, persona_id: str, candidate: str) -> bool:
+    """True, wenn candidate leer ist, oder einer der letzten
+    AUTO_TURN_SIMILARITY_LOOKBACK eigenen (assistant-)Aeusserungen
+    dieser Persona bei dieser Person insgesamt ODER schon im ersten
+    Satz zu aehnlich ist."""
+    if not candidate.strip():
+        return True
+    recent = memory.recent_messages(user_id, persona_id, limit=20)
+    own_recent = [m["content"] for m in recent if m["role"] == "assistant"]
+    own_recent = own_recent[-AUTO_TURN_SIMILARITY_LOOKBACK:]
+    candidate_opener = _first_sentence(candidate)
+    for prior in own_recent:
+        if difflib.SequenceMatcher(None, candidate, prior).ratio() >= AUTO_TURN_SIMILARITY_THRESHOLD:
+            return True
+        opener_ratio = difflib.SequenceMatcher(
+            None, candidate_opener, _first_sentence(prior),
+        ).ratio()
+        if opener_ratio >= AUTO_TURN_OPENER_SIMILARITY_THRESHOLD:
+            return True
+    return False

@@ -8,7 +8,6 @@ Voraussetzung: Ollama laeuft lokal und die in config.py referenzierten
 Modelle sind gepullt (siehe README.md).
 """
 import asyncio
-import difflib
 import logging
 import re
 import subprocess
@@ -34,6 +33,7 @@ import handoff
 import honeypot
 import knowledge
 import llm_client
+import lookahead
 import memory
 import priority
 import reaction_audio
@@ -259,7 +259,12 @@ class TTSRequest(BaseModel):
 @app.post("/api/tts")
 async def text_to_speech(body: TTSRequest):
     persona = PERSONAS.get(body.persona_id) or PERSONAS[FALLBACK_PERSONA]
-    audio_bytes = await speech_client.synthesize(body.text, persona.voice_id)
+    # Trifft nur, wenn lookahead.py denselben Text (Standard-
+    # Chunk-Grenze: erster Satz eines Ketten-Heads, siehe
+    # lookahead._render_head_audio) schon vorab synthetisiert hat -
+    # bei jedem Cache-Miss unveraendertes Verhalten von vorher.
+    cached = lookahead._audio_cache.get((persona.voice_id, body.text))
+    audio_bytes = cached if cached is not None else await speech_client.synthesize(body.text, persona.voice_id)
     return Response(content=audio_bytes, media_type="audio/wav")
 
 
@@ -707,73 +712,32 @@ async def run_turn(
 
     spawn_handoff_task(user_id, persona.id, handoff_outcome)
     await websocket.send_json({"type": "done", "persona": persona.id})
+    lookahead.start_chain_for_speaker(user_id, persona)
 
 
-_AUTO_TURN_PROMPTS = {
-    "continue": autoturn.AUTO_CONTINUE_PROMPT,
-    "continue_new_topic": autoturn.AUTO_CONTINUE_NEW_TOPIC_PROMPT,
-    "wrapup": autoturn.AUTO_WRAPUP_PROMPT,
-    "greeting": autoturn.GREETING_PROMPT,
-}
+async def _deliver_auto_turn(
+    user_id: str, persona, websocket: WebSocket, present: list[str],
+    text: str, topic_for_tagging: str | None,
+) -> None:
+    """Gemeinsamer Sende-/Speicher-/Fan-out-/Done-Block fuer eine
+    unaufgeforderte Aeusserung - egal ob frisch von run_auto_turn()
+    generiert oder bereits als fertige Kettenstufe von
+    lookahead.consume_head() geliefert (siehe room_chat()'s
+    "continue_eligible"-Zweig)."""
+    await websocket.send_json({
+        "type": "token", "content": text, "persona": persona.id, "auto": True,
+    })
+    room.touch(user_id, persona.id)
+    master_id = memory.add_message(
+        user_id, persona.id, "assistant", text, topic=topic_for_tagging,
+    )
 
-# Wie aehnlich (0..1, difflib-Ratio) eine neu generierte Auto-Turn-
-# Aeusserung ihren eigenen letzten Aeusserungen sein darf, bevor sie
-# unterdrueckt wird - live beobachtet (2026-09-22): trotz expliziter
-# Prompt-Anweisung und einem groesseren Modell fielen Auto-Turns
-# wiederholt in fast wortgleiche Wiederholungen zurueck, vermutlich
-# durch die eigene Historie selbst verstaerkt. Ein deterministisches
-# Sicherheitsnetz, unabhaengig davon, wie gut das jeweilige Modell
-# Anweisungen befolgt.
-#
-# 0.75 war zu lasch: ein echtes Beispiel ("Blumenbeete" vs. "ein
-# bestimmtes Springbrunnen" als Garten-Variation derselben Masche) lag
-# nur bei ~0.52 Aehnlichkeit - lexikalisch verschieden, thematisch
-# aber dieselbe Wiederholung. difflib misst Zeichenketten-, keine
-# Bedeutungs-Aehnlichkeit, daher als grobe Kalibrierung gemessen:
-# unterschiedliches Thema ~0.24, gleiches Thema/andere Worte ~0.39,
-# das reale Beispiel ~0.52. 0.35 faengt beide Wiederholungsfaelle ab,
-# ohne echte Themenwechsel zu blockieren.
-AUTO_TURN_SIMILARITY_THRESHOLD = 0.35
-AUTO_TURN_SIMILARITY_LOOKBACK = 5
+    if topic_for_tagging is None:
+        for other_id in present:
+            if other_id != persona.id:
+                memory.add_linked_message(user_id, other_id, "assistant", master_id)
 
-# Zusaetzliche, gezielte Pruefung NUR auf den ersten Satz: live
-# beobachtet (2026-09-22), dass ein Auto-Turn immer mit demselben
-# Einstiegssatz begann ("Ach, der Dobelhofpark, da ist es wirklich
-# schön, oder?"), aber gegen Ende variierte - das verduennt die
-# Gesamt-Aehnlichkeit (AUTO_TURN_SIMILARITY_THRESHOLD) unter die
-# Schwelle, obwohl der wiedererkennbare Teil identisch blieb. Eigene,
-# strengere Schwelle nur fuer den ersten Satz (kalibriert: exakt
-# gleicher Einstieg = 1.0, leicht umformuliert ~0.75, anderes Thema
-# ~0.24 - 0.55 faengt beide Wiederholungsfaelle, nicht echte
-# Themenwechsel).
-AUTO_TURN_OPENER_SIMILARITY_THRESHOLD = 0.55
-
-
-def _first_sentence(text: str) -> str:
-    match = re.match(r"^[\s\S]*?[.!?]+", text)
-    return match.group(0) if match else text
-
-
-def _too_similar_to_own_recent(user_id: str, persona_id: str, candidate: str) -> bool:
-    """True, wenn candidate leer ist, oder einer der letzten
-    AUTO_TURN_SIMILARITY_LOOKBACK eigenen (assistant-)Aeusserungen
-    dieser Persona bei dieser Person insgesamt ODER schon im ersten
-    Satz zu aehnlich ist."""
-    if not candidate.strip():
-        return True
-    recent = memory.recent_messages(user_id, persona_id, limit=20)
-    own_recent = [m["content"] for m in recent if m["role"] == "assistant"]
-    own_recent = own_recent[-AUTO_TURN_SIMILARITY_LOOKBACK:]
-    candidate_opener = _first_sentence(candidate)
-    for prior in own_recent:
-        if difflib.SequenceMatcher(None, candidate, prior).ratio() >= AUTO_TURN_SIMILARITY_THRESHOLD:
-            return True
-        opener_ratio = difflib.SequenceMatcher(
-            None, candidate_opener, _first_sentence(prior),
-        ).ratio()
-        if opener_ratio >= AUTO_TURN_OPENER_SIMILARITY_THRESHOLD:
-            return True
-    return False
+    await websocket.send_json({"type": "done", "persona": persona.id, "auto": True})
 
 
 async def run_auto_turn(
@@ -806,7 +770,7 @@ async def run_auto_turn(
     Gibt zurueck, ob der Auto-Turn tatsaechlich abgeschlossen wurde
     (False bei Abbruch durch eine echte Senior-Anfrage anderswo, ODER
     wenn die generierte Aeusserung sich zu aehnlich zu eigenen letzten
-    Aeusserungen erwiesen hat (siehe _too_similar_to_own_recent) - in
+    Aeusserungen erwiesen hat (siehe autoturn.too_similar_to_own_recent) - in
     beiden Faellen wird nichts gespeichert, nichts gesendet, room.touch()
     NICHT aufgerufen: ein unterdrueckter/abgebrochener Versuch zaehlt
     nicht als "hat gesprochen")."""
@@ -818,14 +782,14 @@ async def run_auto_turn(
     ]
     chat_messages.append({
         "role": "system",
-        "content": _AUTO_TURN_PROMPTS[kind],
+        "content": autoturn.AUTO_TURN_PROMPTS[kind],
     })
 
     tokens: list[str] = []
 
     # Bewusst NICHT live pro Token gesendet (anders als run_turn()): erst
     # NACH der vollen Generierung wird geprueft, ob die Aeusserung
-    # ueberhaupt gesendet werden soll (siehe _too_similar_to_own_recent
+    # ueberhaupt gesendet werden soll (siehe autoturn.too_similar_to_own_recent
     # unten) - bereits live gestreamte Tokens liessen sich beim Client
     # nicht mehr zurueckziehen.
     async def collect():
@@ -845,24 +809,11 @@ async def run_auto_turn(
         priority.unregister_low_priority_task(gen_task)
 
     full_response = "".join(tokens)
-    if _too_similar_to_own_recent(user_id, persona.id, full_response):
+    if autoturn.too_similar_to_own_recent(user_id, persona.id, full_response):
         return False
 
-    await websocket.send_json({
-        "type": "token", "content": full_response, "persona": persona.id,
-        "auto": True,
-    })
-    room.touch(user_id, persona.id)
-    master_id = memory.add_message(
-        user_id, persona.id, "assistant", full_response, topic=topic_for_tagging,
-    )
-
-    if topic_for_tagging is None:
-        for other_id in present:
-            if other_id != persona.id:
-                memory.add_linked_message(user_id, other_id, "assistant", master_id)
-
-    await websocket.send_json({"type": "done", "persona": persona.id, "auto": True})
+    await _deliver_auto_turn(user_id, persona, websocket, present, full_response, topic_for_tagging)
+    lookahead.start_chain_for_speaker(user_id, persona)
     return True
 
 
@@ -918,6 +869,13 @@ async def room_chat(websocket: WebSocket, user_id: str):
                 phase = autoturn.decide_phase(elapsed, consecutive_auto_turns)
 
                 if phase == "quiet":
+                    # Eine Kette fuer eine Persona, die nicht mehr
+                    # anwesend ist, kann nie mehr ausgeliefert werden -
+                    # sonst bleibt sie fuer immer in lookahead._chains
+                    # haengen, ohne je als "stale" gezaehlt zu werden.
+                    stale_persona = lookahead.chain_persona_id(user_id)
+                    if stale_persona is not None and stale_persona not in present:
+                        lookahead.discard_chain(user_id, reason="stale")
                     continue
 
                 candidates = [
@@ -939,6 +897,7 @@ async def room_chat(websocket: WebSocket, user_id: str):
                     )
                     if completed:
                         wrapup_sent = True
+                        lookahead.discard_chain(user_id, reason="stale")
                     continue
 
                 # phase == "continue_eligible": Gate auf die ZULETZT
@@ -958,6 +917,19 @@ async def room_chat(websocket: WebSocket, user_id: str):
                 last_active = {p: (room.last_active_ts(user_id, p) or 0.0) for p in candidates}
                 picked_id = director.pick_responder(candidates, None, last_active, time.time())
                 persona = PERSONAS.get(picked_id) or PERSONAS[FALLBACK_PERSONA]
+
+                # Vorausschauend gebaute Kette pruefen, BEVOR reaktiv
+                # generiert wird (siehe lookahead.py) - liefert bei
+                # Treffer sofort aus, ohne LLM-Call zum Lieferzeitpunkt.
+                lookahead_head = lookahead.consume_head(user_id, persona.id)
+                if lookahead_head is not None:
+                    await _deliver_auto_turn(
+                        user_id, persona, websocket, present,
+                        lookahead_head.text, memory.active_topic(user_id, persona.id),
+                    )
+                    consecutive_auto_turns += 1
+                    continue
+
                 # Ab dem ZWEITEN Auto-Turn in derselben Stille-Phase (die
                 # Person hat auf den ersten nicht reagiert) das Thema
                 # wechseln statt beim selben zu bleiben - siehe
@@ -984,6 +956,7 @@ async def room_chat(websocket: WebSocket, user_id: str):
             last_user_message_ts = time.time()
             consecutive_auto_turns = 0
             wrapup_sent = False
+            lookahead.discard_chain(user_id, reason="interrupted")
 
             candidates_map = {pid: p.display_name for pid, p in PERSONAS.items()}
             addressed = room.detect_addressed_persona(user_text, candidates_map)
@@ -1345,6 +1318,10 @@ def admin_stats():
             "trigger_count": honeypot.trigger_count(),
             "last_triggered_at": honeypot.last_triggered_at(),
         },
+        # Vorausschauend gebaute Ketten (siehe lookahead.py) -
+        # delivery_rate_by_depth ist die fuer "lohnt sich Tiefe 5?"
+        # direkt relevante Zahl.
+        "lookahead": lookahead.stats(),
         # "Wie oft, wieviele Minuten am Tag" pro Nutzer:in.
         "usage": usage,
         # "Freundeskreis": wie oft/wie lange wird welche Persona

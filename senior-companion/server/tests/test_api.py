@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 import honeypot
 import knowledge
+import lookahead
 import main
 import memory
 import speech_client
@@ -717,6 +718,50 @@ def test_tts_endpoint_falls_back_to_default_persona_for_unknown_id(monkeypatch):
 
     assert r.status_code == 200
     assert captured["voice"] == main.PERSONAS[main.FALLBACK_PERSONA].voice_id
+
+
+def test_tts_endpoint_returns_cached_audio_without_calling_synthesize(monkeypatch):
+    """Integrationspunkt 7 (siehe lookahead.py): ein vorab per
+    lookahead._render_head_audio gerenderter (voice_id, text)-Eintrag
+    muss von /api/tts gefunden werden, statt neu zu synthetisieren."""
+    async def fake_synthesize(text, voice):
+        raise AssertionError("Cache-Treffer haette synthesize() gar nicht aufrufen duerfen")
+
+    monkeypatch.setattr(speech_client, "synthesize", fake_synthesize)
+    voice_id = main.PERSONAS["freundin"].voice_id
+    lookahead._audio_cache[(voice_id, "Schön, dass du da bist!")] = b"vorab-gerendertes-wav"
+
+    try:
+        with TestClient(main.app) as client:
+            r = client.post(
+                "/api/tts",
+                json={"text": "Schön, dass du da bist!", "persona_id": "freundin"},
+            )
+        assert r.status_code == 200
+        assert r.content == b"vorab-gerendertes-wav"
+    finally:
+        lookahead._audio_cache.clear()
+
+
+def test_tts_endpoint_cache_miss_falls_back_to_synthesize_unchanged(monkeypatch):
+    captured = {}
+
+    async def fake_synthesize(text, voice):
+        captured["text"] = text
+        return b"live-synthetisiert"
+
+    monkeypatch.setattr(speech_client, "synthesize", fake_synthesize)
+    assert not lookahead._audio_cache  # nichts vorgerendert
+
+    with TestClient(main.app) as client:
+        r = client.post(
+            "/api/tts",
+            json={"text": "Ein ganz neuer Satz.", "persona_id": "freundin"},
+        )
+
+    assert r.status_code == 200
+    assert r.content == b"live-synthetisiert"
+    assert captured["text"] == "Ein ganz neuer Satz."
 
 
 # --- Reaktionssaetze fuer Gespraechssituationen (reaction_audio.py) -----

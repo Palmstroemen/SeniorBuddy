@@ -12,9 +12,15 @@ from fastapi.testclient import TestClient
 
 import autoturn
 import director
+import lookahead
 import main
 import memory
 import room
+
+# Vor jedem Monkeypatch/Reset eingefangen, damit einzelne Lookahead-
+# Tests weiter unten das echte start_chain_for_speaker gezielt wieder
+# einsetzen koennen (siehe _reset_lookahead_state).
+_real_start_chain_for_speaker = lookahead.start_chain_for_speaker
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +28,36 @@ def _reset_room_state():
     room._present.clear()
     yield
     room._present.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_lookahead_state(monkeypatch):
+    """Ohne diese Sicherung wuerde JEDER bestehende Test in dieser
+    Datei ueber die main.py-Integration (run_turn()/run_auto_turn()
+    starten seit dieser Aenderung automatisch eine echte Hintergrund-
+    Kette, siehe lookahead.py) einen echten Hintergrund-Task anstossen
+    - der nach Testende, wenn das jeweilige monkeypatch von
+    main.llm_client.stream zurueckgesetzt wird, ploetzlich echte
+    Ollama-Aufrufe macht (real beobachtet als haengender Gesamt-
+    Testlauf). Deshalb standardmaessig ein No-Op; die Lookahead-Tests
+    im eigenen Abschnitt setzen _real_start_chain_for_speaker gezielt
+    wieder ein, wo sie echtes Kettenbauen brauchen."""
+    monkeypatch.setattr(lookahead, "start_chain_for_speaker", lambda *a, **kw: None)
+    lookahead._chains.clear()
+    lookahead._audio_cache.clear()
+    lookahead._levels_built = {d: 0 for d in range(1, 6)}
+    lookahead._levels_delivered = {d: 0 for d in range(1, 6)}
+    lookahead._discarded_interrupted = 0
+    lookahead._discarded_suppressed = 0
+    lookahead._discarded_stale = 0
+    yield
+    for chain in lookahead._chains.values():
+        if chain.build_task is not None and not chain.build_task.done():
+            chain.build_task.cancel()
+        if chain.audio_task is not None and not chain.audio_task.done():
+            chain.audio_task.cancel()
+    lookahead._chains.clear()
+    lookahead._audio_cache.clear()
 
 
 @pytest.fixture
@@ -867,3 +903,142 @@ def test_room_chat_no_handoff_detected_leaves_chat_messages_unchanged(monkeypatc
 
     injected = [m for m in captured["messages"] if m["role"] == "system"]
     assert not any("weitergeben" in m["content"] for m in injected)
+
+
+# ---------------------------------------------------------------------
+# Speculative Lookahead (lookahead.py) - siehe docs/ARCHITECTURE.md.
+# start_chain_for_speaker ist standardmaessig ein No-Op in dieser Datei
+# (siehe _reset_lookahead_state) - Tests hier setzen bei Bedarf gezielt
+# _real_start_chain_for_speaker wieder ein, oder bauen Ketten direkt
+# per Hand (deterministisch, ohne Timing-Abhaengigkeit von einem echten
+# Hintergrund-Task).
+# ---------------------------------------------------------------------
+
+_LOOKAHEAD_REPLIES = [
+    "Guten Tag, wie schoen, dass Sie da sind.",
+    "Ich mag den Herbst besonders, die Blaetter faerben sich so schoen.",
+    "Erzaehlen Sie mir von Ihrem Garten, welche Blumen haben Sie denn?",
+    "Der Winter kommt bald, haben Sie sich schon warm eingepackt?",
+    "Wie war Ihr letzter Spaziergang, waren Sie oft draussen?",
+    "Ich denke gerne an vergangene Sommer zurueck, voller Sonnenschein.",
+]
+
+
+def test_room_chat_ready_lookahead_candidate_delivered_without_extra_llm_call(
+    monkeypatch, _fast_autoturn_timing,
+):
+    # Statt Aufrufe zu ZAEHLEN (der Hintergrund-Aufbau laeuft legitim
+    # parallel weiter und wuerde die Zahl auch bei korrektem Verhalten
+    # veraendern) wird hier PROTOKOLLIERT, WELCHE Texte schon VOR der
+    # Auslieferungs-Runde erzeugt wurden - der ausgelieferte Text muss
+    # einer davon sein, sonst waere er live erst zum Lieferzeitpunkt
+    # generiert worden (deterministisch pruefbar, da die Antworten der
+    # Reihe nach unterschiedlich sind, keine Wiederholungen).
+    produced_texts = []
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        idx = len(produced_texts)
+        text = _LOOKAHEAD_REPLIES[idx % len(_LOOKAHEAD_REPLIES)]
+        produced_texts.append(text)
+        yield text
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(lookahead, "start_chain_for_speaker", _real_start_chain_for_speaker)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.0)  # immer fortsetzen
+
+    user_id = "lookahead_room_a"
+    with TestClient(main.app) as client:
+        with client.websocket_connect(f"/ws/room/{user_id}") as ws:
+            ws.send_text("Hallo, ich bin da!")
+            _drain_until(ws, lambda m: m.get("type") == "done" and not m.get("auto"))
+
+            deadline = time.time() + 2.0
+            chain = None
+            while time.time() < deadline:
+                chain = lookahead._chains.get(user_id)
+                if chain is not None and chain.levels:
+                    break
+                time.sleep(0.01)
+            assert chain is not None and chain.levels, "Kette wurde nicht rechtzeitig gebaut"
+            texts_before_delivery = set(produced_texts)
+
+            auto_msgs = _drain_until(ws, lambda m: m.get("type") == "done" and m.get("auto"))
+
+    delivered = next(
+        m["content"] for m in auto_msgs if m.get("type") == "token" and m.get("auto")
+    )
+    assert delivered in texts_before_delivery
+
+
+def test_room_chat_delivered_lookahead_text_matches_chain_head_exactly(
+    monkeypatch, _fast_autoturn_timing,
+):
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        yield _LOOKAHEAD_REPLIES[idx % len(_LOOKAHEAD_REPLIES)]
+
+    call_count = {"n": 0}
+    monkeypatch.setattr(lookahead.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.0)  # immer fortsetzen
+    room.touch("lookahead_room_b", "freundin")
+
+    chain = lookahead.Chain(user_id="lookahead_room_b", persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(
+        depth=1, kind="continue", text="Vorbereiteter Kandidatensatz, ganz einzigartig.",
+    ))
+    lookahead._chains["lookahead_room_b"] = chain
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/lookahead_room_b") as ws:
+            msgs = _drain_until(ws, lambda m: m.get("type") == "done" and m.get("auto"))
+
+    token_msgs = [m for m in msgs if m.get("type") == "token" and m.get("auto")]
+    assert any(
+        m["content"] == "Vorbereiteter Kandidatensatz, ganz einzigartig."
+        for m in token_msgs
+    )
+
+
+def test_room_chat_empty_chain_falls_back_to_reactive_generation_unchanged(
+    monkeypatch, _fast_autoturn_timing,
+):
+    canned_text = "Ach, das erinnert mich an frueher."
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield canned_text
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.0)  # immer fortsetzen
+    room.touch("lookahead_room_c", "freundin")
+    # start_chain_for_speaker bleibt hier bewusst der Fixture-Standard
+    # (No-Op) - es darf zu keinem Zeitpunkt eine Kette entstehen.
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/lookahead_room_c") as ws:
+            msgs = _drain_until(ws, lambda m: m.get("type") == "done" and m.get("auto"))
+
+    assert lookahead._chains.get("lookahead_room_c") is None
+    token_msgs = [m for m in msgs if m.get("type") == "token" and m.get("auto")]
+    assert any(m["content"] == canned_text for m in token_msgs)
+
+
+def test_room_chat_real_user_message_discards_chain_and_increments_stat(monkeypatch):
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield "Normale Antwort auf die echte Nachricht."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    user_id = "lookahead_room_d"
+    chain = lookahead.Chain(user_id=user_id, persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Wird nie gebraucht."))
+    lookahead._chains[user_id] = chain
+    room.touch(user_id, "freundin")
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect(f"/ws/room/{user_id}") as ws:
+            ws.send_text("Hallo, ich bin da!")
+            _drain_until(ws, lambda m: m.get("type") == "done" and not m.get("auto"))
+
+    assert lookahead._chains.get(user_id) is None
+    assert lookahead._discarded_interrupted == 1

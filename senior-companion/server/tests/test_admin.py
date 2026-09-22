@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import admin_settings
 import honeypot
+import lookahead
 import main
 
 ADMIN_HEADERS = {"Authorization": "Bearer test-admin-token"}
@@ -114,6 +115,8 @@ def test_admin_stats_has_expected_fields():
     assert "external_requests" in data
     assert "story_consent" in data
     assert "persona_usage" in data
+    assert "lookahead" in data
+    assert "delivery_rate_by_depth" in data["lookahead"]
     assert "problems" in data
     assert "guard_input_blocks" in data["problems"]
     assert "guard_context_blocks" in data["problems"]
@@ -142,6 +145,24 @@ def test_admin_stats_persona_usage_breaks_down_per_persona():
     persona_usage = r.json()["persona_usage"]["friendcircle_user"]
     assert persona_usage["freundin"]["message_count"] == 2
     assert persona_usage["professor"]["message_count"] == 1
+
+
+def test_admin_stats_lookahead_block_reports_depth_breakdown():
+    lookahead._levels_built[2] = 4
+    lookahead._levels_delivered[2] = 1
+    lookahead._discarded_interrupted = 3
+    try:
+        with TestClient(main.app) as client:
+            r = client.get("/admin/stats", headers=ADMIN_HEADERS)
+        data = r.json()["lookahead"]
+        assert data["levels_built_by_depth"]["2"] == 4
+        assert data["levels_delivered_by_depth"]["2"] == 1
+        assert data["delivery_rate_by_depth"]["2"] == 0.25
+        assert data["discarded_interrupted"] == 3
+    finally:
+        lookahead._levels_built[2] = 0
+        lookahead._levels_delivered[2] = 0
+        lookahead._discarded_interrupted = 0
 
 
 def test_set_satisfaction_interval_takes_effect_and_persists():
