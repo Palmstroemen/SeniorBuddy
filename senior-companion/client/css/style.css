@@ -476,6 +476,21 @@ body {
   font-weight: 700;
 }
 
+.panel-admin-link {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px;
+  border-radius: var(--radius);
+  border: 2px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+}
+
 /* --- Reduzierte Bewegung respektieren -------------------------------*/
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; }
