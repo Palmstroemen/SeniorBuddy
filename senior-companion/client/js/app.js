@@ -456,10 +456,45 @@ function addBubble(text, role, persona) {
   return div;
 }
 
+function isCurrentlySpeaking() {
+  return (
+    speechQueue.length > 0
+    || currentAudio !== null
+    || Boolean(window.speechSynthesis && window.speechSynthesis.speaking)
+  );
+}
+
+// Kurze, vorab synthetisierte Reaktion einer Persona auf eine
+// Gespraechssituation (siehe server/reaction_audio.py) - bewusst
+// generisch ueber "situation" gehalten (heute nur "interrupted"), damit
+// spaetere Situationen (Person schweigt, andere Persona faellt ins
+// Wort, ...) denselben Weg nutzen koennen. Schlaegt der Abruf fehl oder
+// hat die Persona nichts hinterlegt (404), bleibt sie einfach still -
+// kein Fehlerfall, keine Rueckfallebene noetig.
+async function playReaction(personaId, situation) {
+  const myGeneration = speechGeneration;
+  try {
+    const res = await fetch(`/api/reaction/${personaId}/${situation}`);
+    if (!res.ok) return;
+    const blob = await res.blob();
+    if (myGeneration !== speechGeneration) return; // laengst ueberholt
+    const audio = new Audio(URL.createObjectURL(blob));
+    currentAudio = audio;
+    audio.addEventListener("ended", () => {
+      if (currentAudio === audio) currentAudio = null;
+    });
+    audio.play();
+  } catch (err) {
+    // still scheitern - eine fehlende Reaktion ist kein Problem
+  }
+}
+
 function sendMessage() {
   const text = textInput.value.trim();
   if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
   addBubble(text, "user");
+  const wasInterrupted = isCurrentlySpeaking();
+  const interruptedPersona = currentPersona;
   // Unterbricht eine noch laufende Ansage sofort (auch mitten im Satz) -
   // wer der Person gerade zuhoert, soll aufhoeren zu reden, sobald sie
   // selbst etwas sagt, wie in einem echten Gespraech auch.
@@ -467,6 +502,9 @@ function sendMessage() {
   if (currentPersona) {
     speakingPersona = null;
     renderAvatarStage();
+  }
+  if (wasInterrupted && interruptedPersona) {
+    playReaction(interruptedPersona, "interrupted");
   }
   socket.send(text);
   textInput.value = "";

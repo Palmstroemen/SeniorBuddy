@@ -124,6 +124,24 @@ def test_apply_persona_overrides_with_old_shaped_dict_still_works():
     assert restored.variants["neutral"].face_beard == ""
 
 
+def test_persona_config_from_dict_without_reaction_phrases_uses_empty_default():
+    """Rueckwaertskompatibilitaet analog zu den face_*-Feldern: alte
+    Dicts ohne reaction_phrases-Schluessel duerfen nicht abstuerzen."""
+    old_shaped = _sample_persona_dict("altepersona2")
+    old_shaped.pop("reaction_phrases", None)
+    config.apply_persona_overrides([old_shaped])
+    assert config.PERSONAS["altepersona2"].reaction_phrases == {}
+
+
+def test_persona_config_reaction_phrases_roundtrip():
+    d = _sample_persona_dict("reaktionstest")
+    d["reaction_phrases"] = {"interrupted": ["Äh?", "Moment mal!"]}
+    config.apply_persona_overrides([d])
+    assert config.PERSONAS["reaktionstest"].reaction_phrases == {
+        "interrupted": ["Äh?", "Moment mal!"],
+    }
+
+
 def test_persona_config_mutate_in_place_object_identity_preserved():
     """Sicherheitskritisch: apply_persona_overrides() darf PERSONAS
     NIEMALS neu binden (config.PERSONAS = {...}), nur mutieren -

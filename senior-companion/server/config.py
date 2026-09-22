@@ -78,6 +78,17 @@ class PersonaConfig:
     # Personas tatsaechlich noetig, da es fuer sie keine CSS-Regel gibt.
     color: str = "#4A5D52"
     background_color: str = "#E9EEEA"
+    # Kurze, vorab synthetisierte Reaktionssaetze fuer bestimmte
+    # Gespraechssituationen (siehe server/reaction_audio.py) - z.B. wenn
+    # die Persona unterbrochen wird. Schluessel = Situation, Wert = Liste
+    # moeglicher Saetze (einer wird pro Anfrage zufaellig gewaehlt).
+    # Bewusst generisch/erweiterbar fuer kuenftige Situationen (Person
+    # schweigt, andere Persona faellt ins Wort, ...), auch wenn heute
+    # nur "interrupted" befuellt ist. Charaktereigenschaft, daher hier
+    # auf PersonaConfig statt der gegenderten PersonaVariant (analog zu
+    # reengagement_tendency) - die Stimme fuer die Synthese kommt trotzdem
+    # aus der jeweils aktiven Variante (self.voice_id).
+    reaction_phrases: dict[str, list[str]] = dataclasses.field(default_factory=dict)
 
     def _active_variant(self) -> PersonaVariant:
         gender = PERSONA_GENDER.get(self.id, "neutral")
@@ -140,6 +151,13 @@ PERSONAS: dict[str, PersonaConfig] = {
         reengagement_tendency=0.8,
         color="#B5637E",
         background_color="#F7E9ED",
+        reaction_phrases={
+            "interrupted": [
+                "Äh, Moment mal!", "Hoppla, ich war noch nicht fertig!",
+                "Oh! Ja, was gibt's?", "Na gut, dann eben nicht.",
+                "Entschuldigung, ich rede noch!",
+            ],
+        },
         variants={
             "neutral": PersonaVariant(
                 display_name="Robin",
@@ -249,6 +267,12 @@ PERSONAS: dict[str, PersonaConfig] = {
         reengagement_tendency=0.6,
         color="#B3671F",
         background_color="#F6E9DA",
+        reaction_phrases={
+            "interrupted": [
+                "Oh, ja bitte?", "Ah, Sie haben noch was zu erzählen?",
+                "Natürlich, ich höre.", "Moment, aber gerne.", "Ja doch?",
+            ],
+        },
         variants={
             "neutral": PersonaVariant(
                 display_name="Alex",
@@ -331,6 +355,12 @@ PERSONAS: dict[str, PersonaConfig] = {
         reengagement_tendency=0.2,
         color="#3C4F6E",
         background_color="#E4E9F1",
+        reaction_phrases={
+            "interrupted": [
+                "Nun ja, bitte.", "Eine Zwischenfrage, aha.",
+                "Einen Moment noch, bitte.", "Gut, fahren Sie fort.", "Wie bitte?",
+            ],
+        },
         variants={
             "neutral": PersonaVariant(
                 display_name="Wallner",
@@ -413,6 +443,12 @@ PERSONAS: dict[str, PersonaConfig] = {
         reengagement_tendency=0.4,
         color="#2E6B66",
         background_color="#E3EFEE",
+        reaction_phrases={
+            "interrupted": [
+                "Ja, was gibt's?", "Alles klar, ich höre.",
+                "Moment, kein Problem.", "Ja bitte?", "Gerne, sagen Sie.",
+            ],
+        },
         variants={
             "neutral": PersonaVariant(
                 display_name="Toni",

@@ -36,6 +36,7 @@ import knowledge
 import llm_client
 import memory
 import priority
+import reaction_audio
 import room
 import satisfaction
 import secrecy
@@ -259,6 +260,23 @@ class TTSRequest(BaseModel):
 async def text_to_speech(body: TTSRequest):
     persona = PERSONAS.get(body.persona_id) or PERSONAS[FALLBACK_PERSONA]
     audio_bytes = await speech_client.synthesize(body.text, persona.voice_id)
+    return Response(content=audio_bytes, media_type="audio/wav")
+
+
+@app.get("/api/reaction/{persona_id}/{situation}")
+async def get_reaction(persona_id: str, situation: str):
+    """Liefert eine zufaellig gewaehlte, vorab synthetisierte (siehe
+    reaction_audio.py) Reaktion dieser Persona fuer die gegebene
+    Situation - z.B. "interrupted", wenn sie gerade unterbrochen wurde.
+    Bewusst kein fester Situations-Katalog: unbekannte Persona ODER
+    Situation ohne hinterlegte Saetze fuehren gleichermassen zu 404,
+    der Client soll dann einfach still bleiben."""
+    persona = PERSONAS.get(persona_id)
+    if persona is None:
+        raise HTTPException(404, "Persona nicht gefunden")
+    audio_bytes = await reaction_audio.get_reaction_audio(persona, situation)
+    if audio_bytes is None:
+        raise HTTPException(404, f"Keine Reaktionssaetze fuer Situation '{situation}'")
     return Response(content=audio_bytes, media_type="audio/wav")
 
 
@@ -1149,6 +1167,12 @@ class PersonaFieldsIn(BaseModel):
     reengagement_tendency: float = Field(0.5, ge=0.0, le=1.0)
     color: str
     background_color: str
+    # Muss hier mit aufgefuehrt sein, sonst wuerde ein Admin-Update
+    # (PersonaFieldsIn.model_dump() -> apply_persona_overrides) bereits
+    # gesetzte reaction_phrases stillschweigend auf {} zuruecksetzen -
+    # PersonaConfig.from_dict() fuellt jeden fehlenden Schluessel mit
+    # dem Dataclass-Default auf.
+    reaction_phrases: dict[str, list[str]] = {}
     variants: dict[str, PersonaVariantIn]
 
     @field_validator("variants")

@@ -719,6 +719,40 @@ def test_tts_endpoint_falls_back_to_default_persona_for_unknown_id(monkeypatch):
     assert captured["voice"] == main.PERSONAS[main.FALLBACK_PERSONA].voice_id
 
 
+# --- Reaktionssaetze fuer Gespraechssituationen (reaction_audio.py) -----
+
+def test_reaction_endpoint_returns_audio_for_known_situation(monkeypatch):
+    captured = {}
+
+    async def fake_synthesize(text, voice):
+        captured["text"] = text
+        captured["voice"] = voice
+        return b"wav-bytes"
+
+    monkeypatch.setattr(speech_client, "synthesize", fake_synthesize)
+
+    with TestClient(main.app) as client:
+        r = client.get("/api/reaction/freundin/interrupted")
+
+    assert r.status_code == 200
+    assert r.content == b"wav-bytes"
+    assert r.headers["content-type"] == "audio/wav"
+    assert captured["text"] in main.PERSONAS["freundin"].reaction_phrases["interrupted"]
+    assert captured["voice"] == main.PERSONAS["freundin"].voice_id
+
+
+def test_reaction_endpoint_404_for_situation_without_phrases(monkeypatch):
+    with TestClient(main.app) as client:
+        r = client.get("/api/reaction/freundin/does_not_exist_situation")
+    assert r.status_code == 404
+
+
+def test_reaction_endpoint_404_for_unknown_persona():
+    with TestClient(main.app) as client:
+        r = client.get("/api/reaction/does_not_exist/interrupted")
+    assert r.status_code == 404
+
+
 # --- Zusammenfassungs-Uebergabe (handoff.py) -----------------------------
 
 def test_handoff_request_spawns_summary_task_and_acknowledges(monkeypatch):

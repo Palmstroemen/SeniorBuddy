@@ -160,6 +160,33 @@ def test_create_persona_with_face_fields_roundtrips():
     assert maennlich["face_hairstyle"] == "dutt"
 
 
+def test_create_persona_with_reaction_phrases_roundtrips():
+    body = _persona_body()
+    body["reaction_phrases"] = {"interrupted": ["Äh?", "Moment!"]}
+    with TestClient(main.app) as client:
+        client.post("/admin/personas", json=body, headers=ADMIN_HEADERS)
+        r = client.get("/admin/personas/nachbarin", headers=ADMIN_HEADERS)
+    assert r.json()["reaction_phrases"] == {"interrupted": ["Äh?", "Moment!"]}
+
+
+def test_update_persona_preserves_reaction_phrases_when_resent_unchanged():
+    """Regressionswaechter: PersonaFieldsIn muss reaction_phrases
+    kennen, sonst wuerde ein PUT ohne dieses Feld es stillschweigend auf
+    {} zuruecksetzen (PersonaConfig.from_dict() fuellt fehlende
+    Schluessel mit dem Dataclass-Default), obwohl der Aufrufer nur eine
+    ANDERE Aenderung (hier: system_prompt) vornehmen wollte."""
+    create_body = _persona_body()
+    create_body["reaction_phrases"] = {"interrupted": ["Äh?"]}
+    update_body = _persona_body(None)
+    update_body["reaction_phrases"] = {"interrupted": ["Äh?"]}
+    update_body["variants"]["neutral"]["system_prompt"] = "Neuer Prompt, Sie-Form."
+    with TestClient(main.app) as client:
+        client.post("/admin/personas", json=create_body, headers=ADMIN_HEADERS)
+        client.put("/admin/personas/nachbarin", json=update_body, headers=ADMIN_HEADERS)
+        r = client.get("/admin/personas/nachbarin", headers=ADMIN_HEADERS)
+    assert r.json()["reaction_phrases"] == {"interrupted": ["Äh?"]}
+
+
 def test_update_persona_takes_effect_immediately():
     body = _persona_body(None)
     body["variants"]["neutral"]["system_prompt"] = "Neuer Prompt, Sie-Form."
