@@ -74,3 +74,54 @@ async def test_get_reaction_audio_caches_by_voice_and_phrase(monkeypatch):
     await reaction_audio.get_reaction_audio(persona, "interrupted")
 
     assert call_count == 1
+
+
+async def test_get_reaction_audio_picks_du_variant_when_anrede_is_du(monkeypatch):
+    captured = {}
+
+    async def fake_synthesize(text, voice):
+        captured["text"] = text
+        return b"wav-bytes"
+
+    monkeypatch.setattr(reaction_audio.speech_client, "synthesize", fake_synthesize)
+    persona = _StubPersona("v1", {
+        "resumed": {"sie": ["Schön, dass Sie wieder da sind."], "du": ["Schön, dass du wieder da bist."]},
+    })
+
+    await reaction_audio.get_reaction_audio(persona, "resumed", anrede="du")
+
+    assert captured["text"] == "Schön, dass du wieder da bist."
+
+
+async def test_get_reaction_audio_defaults_to_sie_variant(monkeypatch):
+    captured = {}
+
+    async def fake_synthesize(text, voice):
+        captured["text"] = text
+        return b"wav-bytes"
+
+    monkeypatch.setattr(reaction_audio.speech_client, "synthesize", fake_synthesize)
+    persona = _StubPersona("v1", {
+        "resumed": {"sie": ["Schön, dass Sie wieder da sind."], "du": ["Schön, dass du wieder da bist."]},
+    })
+
+    await reaction_audio.get_reaction_audio(persona, "resumed")
+
+    assert captured["text"] == "Schön, dass Sie wieder da sind."
+
+
+async def test_get_reaction_audio_falls_back_to_sie_for_unknown_anrede_value(monkeypatch):
+    captured = {}
+
+    async def fake_synthesize(text, voice):
+        captured["text"] = text
+        return b"wav-bytes"
+
+    monkeypatch.setattr(reaction_audio.speech_client, "synthesize", fake_synthesize)
+    persona = _StubPersona("v1", {
+        "resumed": {"sie": ["Schön, dass Sie wieder da sind."], "du": ["Schön, dass du wieder da bist."]},
+    })
+
+    await reaction_audio.get_reaction_audio(persona, "resumed", anrede="quatsch")
+
+    assert captured["text"] == "Schön, dass Sie wieder da sind."

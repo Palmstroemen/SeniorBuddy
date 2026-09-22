@@ -798,6 +798,55 @@ def test_reaction_endpoint_404_for_unknown_persona():
     assert r.status_code == 404
 
 
+def test_reaction_endpoint_uses_du_variant_when_user_already_offered_du(monkeypatch):
+    captured = {}
+
+    async def fake_synthesize(text, voice):
+        captured["text"] = text
+        return b"wav-bytes"
+
+    monkeypatch.setattr(speech_client, "synthesize", fake_synthesize)
+    memory.add_fact("reaction_du_user", "anrede:freundin", "du", source_persona="freundin")
+
+    with TestClient(main.app) as client:
+        r = client.get("/api/reaction/freundin/resumed?user_id=reaction_du_user")
+
+    assert r.status_code == 200
+    assert captured["text"] in main.PERSONAS["freundin"].reaction_phrases["resumed"]["du"]
+
+
+def test_reaction_endpoint_defaults_to_sie_without_user_id(monkeypatch):
+    captured = {}
+
+    async def fake_synthesize(text, voice):
+        captured["text"] = text
+        return b"wav-bytes"
+
+    monkeypatch.setattr(speech_client, "synthesize", fake_synthesize)
+
+    with TestClient(main.app) as client:
+        r = client.get("/api/reaction/freundin/resumed")
+
+    assert r.status_code == 200
+    assert captured["text"] in main.PERSONAS["freundin"].reaction_phrases["resumed"]["sie"]
+
+
+# --- Sprechpausen-Rohdaten (speech_timing.py) ----------------------------
+
+def test_speech_pause_endpoint_records_sample():
+    import speech_timing
+    speech_timing._pause_samples.pop("pause_endpoint_user", None)
+    try:
+        with TestClient(main.app) as client:
+            r = client.post(
+                "/api/speech-pause/pause_endpoint_user", json={"seconds": 3.2},
+            )
+        assert r.status_code == 200
+        assert speech_timing.stats()["pause_endpoint_user"]["count"] == 1
+    finally:
+        speech_timing._pause_samples.pop("pause_endpoint_user", None)
+
+
 # --- Zusammenfassungs-Uebergabe (handoff.py) -----------------------------
 
 def test_handoff_request_spawns_summary_task_and_acknowledges(monkeypatch):

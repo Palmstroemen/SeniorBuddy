@@ -50,47 +50,25 @@ body {
   flex-direction: column;
 }
 
-/* --- Startbildschirm (siehe loadPersonas() in app.js) ------------- */
+/* --- Bereitschafts-Hinweis (siehe app.js's LOADING_HINT/READY_HINT) -
+   ".hint-loading" markiert nur die "wird vorbereitet"-Phase mit einem
+   sanften Pulsieren; sobald app.js auf den fertigen Hinweistext
+   umschaltet, wird die Klasse entfernt (siehe stageIdle()/updateChatHint()
+   in app.js) und der Text steht ruhig da, wie zuvor. Kein eigener,
+   ueberlagernder Start-Bildschirm mehr - der Hinweis lebt direkt an der
+   Stelle, an der spaeter auch der Leerlauf-Hinweis steht. */
 
-.splash-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--paper);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 20;
+.hint-loading {
+  animation: hint-pulse 1.6s ease-in-out infinite;
 }
 
-.splash-overlay[hidden] {
-  display: none;
-}
-
-.splash-content {
-  text-align: center;
-  padding: 0 24px;
-}
-
-.splash-content h1 {
-  font-family: var(--font-display);
-  font-size: 36px;
-  font-weight: 600;
-  margin: 0 0 12px;
-}
-
-.splash-content p {
-  color: var(--ink-soft);
-  font-size: 18px;
-  animation: splash-fade 1.6s ease-in-out infinite;
-}
-
-@keyframes splash-fade {
+@keyframes hint-pulse {
   0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .splash-content p { animation: none; }
+  .hint-loading { animation: none; }
 }
 
 /* --- Topbar / Persona-Tabs --------------------------------------- */
@@ -187,15 +165,25 @@ body {
   opacity: 0.6;
 }
 
+/* Bewusst OHNE Kreis/Rahmen und deutlich groesser als zuvor (44px
+   Kreis mit 24px-Glyphe) - etwa so gross wie die Avatar-Kacheln
+   (avatar-icon-bg, 48px), damit das Zahnrad auf den ersten Blick als
+   eigenstaendiges, gut greifbares Symbol erkennbar ist, nicht als
+   kleines "i" in einem Kreis untergeht. */
 .transparency-btn {
-  font-size: 24px;
+  font-size: 44px;
+  line-height: 1;
   background: none;
-  border: 2px solid var(--line);
-  border-radius: 999px;
-  width: 44px;
-  height: 44px;
+  border: none;
+  width: 48px;
+  height: 48px;
+  padding: 0;
   cursor: pointer;
   color: var(--ink-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 /* --- Chat-Bereich -------------------------------------------------- */
@@ -370,12 +358,12 @@ body {
 .text-input:focus-visible,
 .persona-tab:focus-visible,
 .send-btn:focus-visible,
-.mic-btn:focus-visible {
+.pause-btn:focus-visible {
   outline: 3px solid var(--gold);
   outline-offset: 2px;
 }
 
-.mic-btn, .send-btn {
+.pause-btn, .send-btn {
   border: none;
   border-radius: var(--radius);
   font-family: var(--font-body);
@@ -385,14 +373,26 @@ body {
   min-height: 52px;
 }
 
-.mic-btn {
+.pause-btn {
   width: 52px;
   font-size: 24px;
   background: var(--sage-soft);
 }
 
-.mic-btn.recording {
+/* Mikrofon hoert gerade tatsaechlich etwas (waehrend "aktiv" der
+   Normalzustand) - dezenter Hinweis, kein Alarm-Farbton, da
+   Dauer-Zuhoeren jetzt der Normalfall ist, nicht mehr eine bewusst
+   ausgeloeste Aufnahme. */
+.pause-btn.recording {
   background: var(--gold);
+}
+
+/* System pausiert (siehe app.js's pauseSystem()) - deutlich stumm/
+   inaktiv wirkend, damit auf einen Blick klar ist, dass gerade weder
+   zugehoert noch gesprochen wird. */
+.pause-btn.paused {
+  background: var(--line);
+  color: var(--ink-soft);
 }
 
 .send-btn {

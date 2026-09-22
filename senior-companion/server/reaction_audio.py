@@ -21,13 +21,24 @@ import speech_client
 _cache: dict[tuple[str, str], bytes] = {}
 
 
-async def get_reaction_audio(persona, situation: str) -> bytes | None:
+async def get_reaction_audio(persona, situation: str, anrede: str = "sie") -> bytes | None:
     """None, wenn diese Persona fuer die gegebene Situation keine
     Reaktionssaetze hinterlegt hat - der Aufrufer soll dann einfach
-    still bleiben, kein Fehlerfall."""
+    still bleiben, kein Fehlerfall.
+
+    phrases ist entweder eine flache, anrede-neutrale Liste, oder ein
+    {"sie": [...], "du": [...]}-Dict (siehe PersonaConfig.reaction_phrases)
+    - im zweiten Fall waehlt anrede (Standard "sie", main.py ermittelt
+    den tatsaechlichen Wert aus dem gespeicherten anrede-Fakt) die
+    passende Liste, mit "sie" als Sicherheitsnetz falls anrede einen
+    unbekannten Wert hat."""
     phrases = persona.reaction_phrases.get(situation)
     if not phrases:
         return None
+    if isinstance(phrases, dict):
+        phrases = phrases.get(anrede) or phrases.get("sie")
+        if not phrases:
+            return None
     text = random.choice(phrases)
     key = (persona.voice_id, text)
     if key not in _cache:

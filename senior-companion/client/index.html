@@ -13,39 +13,35 @@
 </head>
 <body>
 
-<!-- Startbildschirm: sichtbar bis loadPersonas() fertig ist (siehe
-     app.js) - ohne das waere in den ersten Sekunden eine leere
-     Personas-Leiste plus der irrefuehrende "Tippe unten etwas..."-
-     Hinweis zu sehen, obwohl noch gar nichts einsatzbereit ist. -->
-<div class="splash-overlay" id="splashOverlay">
-  <div class="splash-content">
-    <h1>Willkommen bei SeniorBuddy</h1>
-    <p>Einen Moment, wir bereiten alles vor …</p>
-  </div>
-</div>
-
 <header class="topbar">
   <nav class="persona-tabs" id="personaTabs" aria-label="Gesprächspartner wählen">
     <!-- wird per JS aus /api/personas befüllt -->
   </nav>
   <span class="version-badge" id="versionBadge" title="Laufende Version (Commit)"></span>
-  <button class="transparency-btn" id="transparencyBtn" aria-label="Was wurde geteilt?">
-    ⓘ
+  <button class="transparency-btn" id="transparencyBtn" aria-label="Einstellungen">
+    ⚙️
   </button>
 </header>
 
+<!-- Der Bereitschafts-Hinweis (siehe app.js's LOADING_HINT/READY_HINT)
+     steht bewusst genau an der Stelle, an der spaeter der
+     Leerlauf-Hinweis steht - kein eigener, ueberlagernder
+     Start-Bildschirm mehr (fruehere splash-overlay-Loesung), damit der
+     Uebergang "wird vorbereitet" -> "einsatzbereit" sich wie ein
+     einfacher Textwechsel an derselben Stelle anfuehlt, nicht wie ein
+     Bildschirmwechsel. -->
 <main class="chat-area" id="chatArea" aria-live="polite" hidden>
   <div class="welcome">
-    <p>Tippe unten etwas, oder halte den Mikrofon-Knopf gedrückt, um zu sprechen.</p>
+    <p class="hint-loading" id="chatHint">Einen Moment, wir bereiten alles vor …</p>
   </div>
 </main>
 
 <main class="avatar-stage" id="avatarStage" aria-live="polite">
-  <p class="stage-hint" id="stageHint">Tippe unten etwas, oder halte den Mikrofon-Knopf gedrückt, um zu sprechen.</p>
+  <p class="stage-hint hint-loading" id="stageHint">Einen Moment, wir bereiten alles vor …</p>
 </main>
 
 <footer class="composer">
-  <button class="mic-btn" id="micBtn" aria-label="Sprechen">🎙️</button>
+  <button class="pause-btn" id="pauseBtn" aria-label="Pause">⏸️</button>
   <textarea id="textInput" class="text-input" rows="1"
             placeholder="Schreib etwas …" aria-label="Nachricht eingeben"></textarea>
   <button class="send-btn" id="sendBtn" aria-label="Senden">Senden</button>

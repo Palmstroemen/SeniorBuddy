@@ -42,6 +42,7 @@ import satisfaction
 import secrecy
 import security
 import speech_client
+import speech_timing
 from config import PERSONAS, PERSONA_GENDER, FALLBACK_PERSONA, KNOWLEDGE_PERSONAS
 from plugins.dispatch import find_triggered_plugin, run_plugin, plugin_failure_count
 from plugins.loader import discover_plugins
@@ -269,20 +270,44 @@ async def text_to_speech(body: TTSRequest):
 
 
 @app.get("/api/reaction/{persona_id}/{situation}")
-async def get_reaction(persona_id: str, situation: str):
+async def get_reaction(persona_id: str, situation: str, user_id: str | None = None):
     """Liefert eine zufaellig gewaehlte, vorab synthetisierte (siehe
     reaction_audio.py) Reaktion dieser Persona fuer die gegebene
     Situation - z.B. "interrupted", wenn sie gerade unterbrochen wurde.
     Bewusst kein fester Situations-Katalog: unbekannte Persona ODER
     Situation ohne hinterlegte Saetze fuehren gleichermassen zu 404,
-    der Client soll dann einfach still bleiben."""
+    der Client soll dann einfach still bleiben.
+
+    user_id ist optional (z.B. "interrupted" braucht es nicht, die
+    Saetze sind dort anrede-neutral formuliert) - nur fuer Situationen
+    mit Du/Sie-Varianten (siehe reaction_audio.get_reaction_audio)
+    tatsaechlich relevant. Gleicher anrede-Fakt wie run_turn()."""
     persona = PERSONAS.get(persona_id)
     if persona is None:
         raise HTTPException(404, "Persona nicht gefunden")
-    audio_bytes = await reaction_audio.get_reaction_audio(persona, situation)
+    anrede = "sie"
+    if user_id:
+        anrede = memory.get_fact(user_id, f"anrede:{persona_id}") or "sie"
+    audio_bytes = await reaction_audio.get_reaction_audio(persona, situation, anrede)
     if audio_bytes is None:
         raise HTTPException(404, f"Keine Reaktionssaetze fuer Situation '{situation}'")
     return Response(content=audio_bytes, media_type="audio/wav")
+
+
+class SpeechPauseRequest(BaseModel):
+    seconds: float
+
+
+@app.post("/api/speech-pause/{user_id}")
+async def record_speech_pause(user_id: str, body: SpeechPauseRequest):
+    """Client meldet hier (siehe app.js), wie lange zwischen zwei vom
+    Browser erkannten Sprachphrasen Stille lag - reine Rohdaten-
+    Sammlung fuer eine spaetere Kalibrierung des Dauer-Zuhoerens (siehe
+    speech_timing.py), keine sofortige Verhaltensaenderung. Bewusst
+    ohne Rueckgabewert von Belang - ein fehlgeschlagener Aufruf soll den
+    Client nie beeintraechtigen."""
+    speech_timing.record_pause(user_id, body.seconds)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------
@@ -1322,6 +1347,9 @@ def admin_stats():
         # delivery_rate_by_depth ist die fuer "lohnt sich Tiefe 5?"
         # direkt relevante Zahl.
         "lookahead": lookahead.stats(),
+        # Rohdaten zu Sprechpausen zwischen erkannten Phrasen, pro
+        # Nutzer:in - siehe speech_timing.py.
+        "speech_pauses": speech_timing.stats(),
         # "Wie oft, wieviele Minuten am Tag" pro Nutzer:in.
         "usage": usage,
         # "Freundeskreis": wie oft/wie lange wird welche Persona

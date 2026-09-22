@@ -117,6 +117,7 @@ def test_admin_stats_has_expected_fields():
     assert "persona_usage" in data
     assert "lookahead" in data
     assert "delivery_rate_by_depth" in data["lookahead"]
+    assert "speech_pauses" in data
     assert "problems" in data
     assert "guard_input_blocks" in data["problems"]
     assert "guard_context_blocks" in data["problems"]

@@ -80,15 +80,16 @@ class PersonaConfig:
     background_color: str = "#E9EEEA"
     # Kurze, vorab synthetisierte Reaktionssaetze fuer bestimmte
     # Gespraechssituationen (siehe server/reaction_audio.py) - z.B. wenn
-    # die Persona unterbrochen wird. Schluessel = Situation, Wert = Liste
-    # moeglicher Saetze (einer wird pro Anfrage zufaellig gewaehlt).
-    # Bewusst generisch/erweiterbar fuer kuenftige Situationen (Person
-    # schweigt, andere Persona faellt ins Wort, ...), auch wenn heute
-    # nur "interrupted" befuellt ist. Charaktereigenschaft, daher hier
-    # auf PersonaConfig statt der gegenderten PersonaVariant (analog zu
-    # reengagement_tendency) - die Stimme fuer die Synthese kommt trotzdem
-    # aus der jeweils aktiven Variante (self.voice_id).
-    reaction_phrases: dict[str, list[str]] = dataclasses.field(default_factory=dict)
+    # die Persona unterbrochen wird. Schluessel = Situation, Wert entweder
+    # eine flache Liste moeglicher Saetze (anrede-neutral formuliert, wie
+    # "interrupted") ODER ein {"sie": [...], "du": [...]}-Dict, wenn die
+    # Saetze ein Pronomen brauchen (wie "resumed") - reaction_audio.py
+    # waehlt dann anhand des gespeicherten anrede-Fakts. Bewusst generisch/
+    # erweiterbar fuer kuenftige Situationen. Charaktereigenschaft, daher
+    # hier auf PersonaConfig statt der gegenderten PersonaVariant (analog
+    # zu reengagement_tendency) - die Stimme fuer die Synthese kommt
+    # trotzdem aus der jeweils aktiven Variante (self.voice_id).
+    reaction_phrases: dict[str, list[str] | dict[str, list[str]]] = dataclasses.field(default_factory=dict)
 
     def _active_variant(self) -> PersonaVariant:
         gender = PERSONA_GENDER.get(self.id, "neutral")
@@ -137,6 +138,35 @@ class PersonaConfig:
         return PersonaConfig(**{**d, "variants": variants})
 
 
+# Reaktionssaetze fuer die Situation "resumed" (siehe reaction_audio.py):
+# gemeinsamer Vorrat fuer alle Personas, da dies eher eine administrative
+# als eine charakterliche Aeusserung ist. Duzt eine Person eine Persona
+# schon (memory-Fakt "anrede:<persona_id>" == "du", siehe main.py's
+# run_turn()), MUSS die passende "du"-Variante verwendet werden - nie
+# hart auf eine Form verdrahten. Ein Teil der Saetze ist bewusst
+# anrede-neutral formuliert (keine Umformulierung noetig).
+RESUMED_REACTION_PHRASES = {
+    "sie": [
+        "Ah, sind Sie wieder da!",
+        "Schön, dass Sie wieder da sind.",
+        "Geht's weiter? Wunderbar!",
+        "Weiter geht's!",
+        "Machen wir weiter.",
+        "Auf ein Neues!",
+        "Und es geht weiter.",
+    ],
+    "du": [
+        "Ah, bist du wieder da!",
+        "Schön, dass du wieder da bist.",
+        "Geht's weiter? Wunderbar!",
+        "Weiter geht's!",
+        "Machen wir weiter.",
+        "Auf ein Neues!",
+        "Und es geht weiter.",
+    ],
+}
+
+
 PERSONAS: dict[str, PersonaConfig] = {
     "freundin": PersonaConfig(
         id="freundin",
@@ -157,6 +187,7 @@ PERSONAS: dict[str, PersonaConfig] = {
                 "Oh! Ja, was gibt's?", "Na gut, dann eben nicht.",
                 "Entschuldigung, ich rede noch!",
             ],
+            "resumed": RESUMED_REACTION_PHRASES,
         },
         variants={
             "neutral": PersonaVariant(
@@ -272,6 +303,7 @@ PERSONAS: dict[str, PersonaConfig] = {
                 "Oh, ja bitte?", "Ah, Sie haben noch was zu erzählen?",
                 "Natürlich, ich höre.", "Moment, aber gerne.", "Ja doch?",
             ],
+            "resumed": RESUMED_REACTION_PHRASES,
         },
         variants={
             "neutral": PersonaVariant(
@@ -360,6 +392,7 @@ PERSONAS: dict[str, PersonaConfig] = {
                 "Nun ja, bitte.", "Eine Zwischenfrage, aha.",
                 "Einen Moment noch, bitte.", "Gut, fahren Sie fort.", "Wie bitte?",
             ],
+            "resumed": RESUMED_REACTION_PHRASES,
         },
         variants={
             "neutral": PersonaVariant(
@@ -448,6 +481,7 @@ PERSONAS: dict[str, PersonaConfig] = {
                 "Ja, was gibt's?", "Alles klar, ich höre.",
                 "Moment, kein Problem.", "Ja bitte?", "Gerne, sagen Sie.",
             ],
+            "resumed": RESUMED_REACTION_PHRASES,
         },
         variants={
             "neutral": PersonaVariant(

@@ -38,6 +38,17 @@ let uiMode = loadSetting("senior_companion_ui_mode", "avatar");
 
 let currentPersona = null;     // wer zuletzt sprach (Bubble-Zuordnung/TTS-Stimme)
 let socket = null;
+
+// --- Pause/Fortsetzen (siehe pauseBtn weiter unten) --------------------
+// "paused" haelt Sprachausgabe UND eingehenden Chat komplett an (z.B.
+// kurzer Toilettengang/Telefonanruf) - lastUtteranceText/-Persona
+// merken sich, was zuletzt gesagt wurde, damit resumeSystem() es beim
+// Fortsetzen wiederholen kann, um beim Wiedereinstieg zu helfen.
+let paused = false;
+let listening = false;         // Soll-Zustand: soll der Recognizer gerade laufen?
+let lastUtteranceText = "";
+let lastUtterancePersona = null;
+let preparedResumeAudio = null; // waehrend der Pause vorab geholtes "resumed"-Audio (siehe pauseSystem())
 const PERSONA_NAMES = {};
 const PERSONA_COLORS = {};
 const PERSONA_FACES = {};      // personaId -> {face_eyebrows, face_eyes, face_mouth, face_hairstyle, face_beard}
@@ -84,10 +95,28 @@ const chatArea = document.getElementById("chatArea");
 const avatarStage = document.getElementById("avatarStage");
 const personaTabs = document.getElementById("personaTabs");
 const versionBadge = document.getElementById("versionBadge");
-const splashOverlay = document.getElementById("splashOverlay");
+const chatHint = document.getElementById("chatHint");
 const textInput = document.getElementById("textInput");
 const sendBtn = document.getElementById("sendBtn");
-const micBtn = document.getElementById("micBtn");
+const pauseBtn = document.getElementById("pauseBtn");
+
+// Kein eigener Start-Bildschirm mehr (siehe docs/ARCHITECTURE.md-nahe
+// Session-Notiz) - der Leerlauf-Hinweis in BEIDEN Ansichten zeigt bis
+// zum Ende von loadPersonas() den Vorbereitungs-Text an derselben
+// Stelle, an der danach der echte Leerlauf-Hinweis steht (siehe
+// stageIdle()/updateChatHint() unten).
+const LOADING_HINT = "Einen Moment, wir bereiten alles vor …";
+const READY_HINT = "Tippe unten etwas, oder sprich einfach – ich höre zu.";
+let systemReady = false;
+
+function idleHintText() {
+  return systemReady ? READY_HINT : LOADING_HINT;
+}
+
+function updateChatHint() {
+  chatHint.textContent = idleHintText();
+  chatHint.classList.toggle("hint-loading", !systemReady);
+}
 
 // --- Avatare: reine Strichgesichter (DiceBear "toon-head", CC BY --------
 // 4.0), kein Koerper. Bauteil-Baeume kommen aus FACE_DATA (siehe
@@ -186,7 +215,8 @@ function faceFor(personaId) {
 // --- Avatar-Buehne: zeigt, wer gerade antwortet/spricht ---------------
 
 function stageIdle() {
-  avatarStage.innerHTML = '<p class="stage-hint">Tippe unten etwas, oder halte den Mikrofon-Knopf gedrückt, um zu sprechen.</p>';
+  const loadingClass = systemReady ? "" : " hint-loading";
+  avatarStage.innerHTML = `<p class="stage-hint${loadingClass}" id="stageHint">${idleHintText()}</p>`;
 }
 
 // Baut die gesamte Avatar-Buehne aus presentPersonas + speakingPersona
@@ -337,10 +367,12 @@ async function loadPersonas() {
     btn.addEventListener("click", () => addressPersona(p.id));
     personaTabs.appendChild(btn);
   });
+  systemReady = true;
+  updateChatHint();
   stageIdle();
   applyUiMode();
   connect();
-  splashOverlay.hidden = true;
+  startListening();
 }
 
 // Klick auf ein Taskleisten-Icon spricht die Person an, statt die
@@ -396,6 +428,13 @@ function connect() {
   let spokenOffset = 0;
 
   socket.addEventListener("message", (event) => {
+    // Pausiert: Sprachausgabe UND Chat stehen still - eingehende
+    // Nachrichten (z.B. ein Auto-Turn, der server-seitig laengst nicht
+    // weiss, dass gerade pausiert ist) werden einfach ignoriert, bis
+    // resumeSystem() wieder aktiviert. Was zuletzt VOR der Pause gesagt
+    // wurde, bleibt in lastUtteranceText/lastUtterancePersona erhalten
+    // (siehe pauseSystem()) und wird beim Fortsetzen wiederholt.
+    if (paused) return;
     const msg = JSON.parse(event.data);
     if (msg.type === "token") {
       if (msg.persona && msg.persona !== currentPersona) {
@@ -412,6 +451,13 @@ function connect() {
       }
       assistantBubble.textContent += msg.content;
       chatArea.scrollTop = chatArea.scrollHeight;
+      // Merkt sich den (evtl. noch unvollstaendigen) Text als "zuletzt
+      // Gesagtes" - Grundlage fuer den Wiedereinstiegs-Satz nach einer
+      // Pause (siehe pauseSystem()/resumeSystem()), unabhaengig davon,
+      // ob diese Aeusserung noch fertig wird oder mittendrin
+      // unterbrochen wird.
+      lastUtteranceText = assistantBubble.textContent;
+      lastUtterancePersona = currentPersona;
       // Optimistisch: sofort als anwesend/sprechend anzeigen, noch bevor
       // die naechste presence-Nachricht das bestaetigt (Server schickt
       // presence erst wieder beim naechsten Zug/Tick, siehe main.py) -
@@ -468,27 +514,43 @@ function isCurrentlySpeaking() {
 
 // Kurze, vorab synthetisierte Reaktion einer Persona auf eine
 // Gespraechssituation (siehe server/reaction_audio.py) - bewusst
-// generisch ueber "situation" gehalten (heute nur "interrupted"), damit
-// spaetere Situationen (Person schweigt, andere Persona faellt ins
-// Wort, ...) denselben Weg nutzen koennen. Schlaegt der Abruf fehl oder
-// hat die Persona nichts hinterlegt (404), bleibt sie einfach still -
-// kein Fehlerfall, keine Rueckfallebene noetig.
+// generisch ueber "situation" gehalten ("interrupted", "resumed"),
+// damit spaetere Situationen denselben Weg nutzen koennen. user_id wird
+// mitgeschickt, damit Situationen mit Du/Sie-Varianten (z.B. "resumed")
+// die richtige Form waehlen (siehe main.py's /api/reaction). Schlaegt
+// der Abruf fehl oder hat die Persona nichts hinterlegt (404), bleibt
+// sie einfach still - kein Fehlerfall, keine Rueckfallebene noetig.
+// Loest sich erst auf, wenn die Wiedergabe TATSAECHLICH beendet ist
+// (nicht schon beim Start) - resumeSystem() braucht das, um den
+// Wiedereinstiegs-Satz erst NACH der Reaktion zu sprechen, nicht
+// gleichzeitig darueber.
 async function playReaction(personaId, situation) {
   const myGeneration = speechGeneration;
   try {
-    const res = await fetch(`/api/reaction/${personaId}/${situation}`);
+    const res = await fetch(`/api/reaction/${personaId}/${situation}?user_id=${encodeURIComponent(USER_ID)}`);
     if (!res.ok) return;
     const blob = await res.blob();
     if (myGeneration !== speechGeneration) return; // laengst ueberholt
-    const audio = new Audio(URL.createObjectURL(blob));
-    currentAudio = audio;
-    audio.addEventListener("ended", () => {
-      if (currentAudio === audio) currentAudio = null;
-    });
-    audio.play();
+    await playPreparedAudio(blob);
   } catch (err) {
     // still scheitern - eine fehlende Reaktion ist kein Problem
   }
+}
+
+// Spielt einen bereits geholten Audio-Blob ab (z.B. waehrend einer
+// Pause vorab besorgtes "resumed"-Audio, siehe pauseSystem()) - kein
+// erneuter Netzwerk-Aufruf noetig, daher ohne Verzoegerung abspielbar.
+function playPreparedAudio(blob) {
+  return new Promise((resolve) => {
+    const audio = new Audio(URL.createObjectURL(blob));
+    currentAudio = audio;
+    lastSpeechEndTs = null; // eigene Ausgabe beginnt - kein Sprechpausen-Messwert daraus ableiten
+    audio.addEventListener("ended", () => {
+      if (currentAudio === audio) currentAudio = null;
+      resolve();
+    });
+    audio.play();
+  });
 }
 
 function sendMessage() {
@@ -532,19 +594,106 @@ function showLatencyNotice(text) {
   setTimeout(() => bubble.remove(), 4000);
 }
 
+// Dauer-Zuhoeren statt Knopf-gedrueckt-halten (siehe pauseBtn weiter
+// unten): der Recognizer laeuft, solange das System aktiv/nicht
+// pausiert ist, und startet sich nach jeder erkannten/verworfenen
+// Aeusserung ("end") automatisch neu (continuous=true allein reicht in
+// der Praxis nicht - viele Browser beenden trotzdem nach jeder
+// Aeusserung). WICHTIG gegen ein Feedback-Problem (Geraet hoert seine
+// eigene Sprachausgabe mit, da Mikrofon und Lautsprecher meist im
+// selben Tablet stecken): "result" wird verworfen, solange isCurrentlySpeaking()
+// wahr ist - kein Ergebnis waehrend/kurz nach eigener Ausgabe wird als
+// Eingabe gewertet. Nicht auf realer Hardware getestet (siehe Notiz an
+// den Nutzer) - Zeitfenster/Empfindlichkeit koennten nach dem ersten
+// echten Einsatz noch Anpassung brauchen.
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognizer = null;
+
+// Wie lange zwischen zwei erkannten Sprachphrasen Stille lag - reine
+// Rohdaten-Sammlung (siehe server/speech_timing.py), noch OHNE jede
+// Verhaltensaenderung. Spaeter Grundlage fuer eine Graceperiod, bevor
+// die Companion-Persona eine Pause als "fertig gesprochen" wertet,
+// statt der Person ins Wort zu fallen (Session-Notiz 2026-09-22) - bis
+// dahin bewusst nur beobachten, nicht schon reagieren.
+let lastSpeechEndTs = null;
+
+function reportSpeechPause() {
+  if (lastSpeechEndTs === null) return;
+  const seconds = (Date.now() - lastSpeechEndTs) / 1000;
+  lastSpeechEndTs = null;
+  // Grobe Plausibilitaets-Grenze: eine "Pause" ueber 30s ist mit hoher
+  // Wahrscheinlichkeit durch eine System-Pause oder etwas anderes
+  // Fremdes verzerrt, nicht eine echte Sprechpause - solche Ausreisser
+  // wuerden die Verteilung nur verfaelschen, nicht informieren.
+  if (seconds <= 0 || seconds >= 30) return;
+  fetch(`/api/speech-pause/${encodeURIComponent(USER_ID)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seconds }),
+  }).catch(() => {});
+}
 
 if (SpeechRecognition) {
   recognizer = new SpeechRecognition();
   recognizer.lang = "de-AT";
   recognizer.interimResults = false;
+  recognizer.continuous = true;
 
   recognizer.addEventListener("result", (event) => {
-    textInput.value = event.results[0][0].transcript;
-    sendMessage();
+    if (paused || isCurrentlySpeaking()) return; // eigene Stimme nicht als Eingabe werten
+    const transcript = event.results[event.results.length - 1][0].transcript;
+    if (sttMode === "device") {
+      textInput.value = transcript;
+      sendMessage();
+    }
+    // Im Server-Modus dient dieses Ergebnis nur als Sprachaktivitaets-
+    // Signal - das eigentliche Transkript kommt ueber /api/stt via der
+    // "speechstart"/"speechend"-gesteuerten Aufnahme unten.
   });
-  recognizer.addEventListener("end", () => micBtn.classList.remove("recording"));
+  recognizer.addEventListener("speechstart", () => {
+    // Nur melden, wenn weder pausiert noch die eigene Sprachausgabe
+    // gerade laeuft - sonst wuerde die Zeit, die das System selbst
+    // geredet/pausiert hat, faelschlich als "Sprechpause der Person"
+    // gezaehlt (siehe lastSpeechEndTs-Reset bei speakingPersona/pauseSystem()).
+    if (!paused && !isCurrentlySpeaking()) reportSpeechPause();
+    if (sttMode === "server" && listening && !paused && !isCurrentlySpeaking() && !isServerRecording) {
+      startServerRecording();
+    }
+  });
+  recognizer.addEventListener("speechend", () => {
+    lastSpeechEndTs = Date.now();
+    if (sttMode === "server" && isServerRecording) stopServerRecording();
+  });
+  recognizer.addEventListener("end", () => {
+    // Nach jeder Aeusserung (oder Stille-Timeout) neu starten, solange
+    // wir weiter zuhoeren sollen - das IST das Dauer-Zuhoeren.
+    if (listening && !paused) {
+      try { recognizer.start(); } catch (err) { /* laeuft evtl. schon */ }
+    }
+  });
+  recognizer.addEventListener("error", () => {
+    // Manche Browser feuern bei z.B. "no-speech" "error" statt "end" -
+    // trotzdem weiter zuhoeren, statt endgueltig stillzustehen.
+    if (listening && !paused) {
+      try { recognizer.start(); } catch (err) { /* laeuft evtl. schon */ }
+    }
+  });
+}
+
+function startListening() {
+  if (paused || listening) return;
+  listening = true;
+  if (recognizer) {
+    try { recognizer.start(); } catch (err) { /* laeuft evtl. schon */ }
+  }
+}
+
+function stopListening() {
+  listening = false;
+  if (recognizer) {
+    try { recognizer.stop(); } catch (err) { /* laeuft evtl. schon nicht */ }
+  }
+  if (isServerRecording) stopServerRecording();
 }
 
 let mediaRecorder = null;
@@ -566,12 +715,12 @@ async function startServerRecording() {
   });
   mediaRecorder.start();
   isServerRecording = true;
-  micBtn.classList.add("recording");
+  pauseBtn.classList.add("recording");
 }
 
 async function stopServerRecording() {
   isServerRecording = false;
-  micBtn.classList.remove("recording");
+  pauseBtn.classList.remove("recording");
 
   const stopped = new Promise((resolve) => {
     mediaRecorder.addEventListener("stop", resolve, { once: true });
@@ -599,20 +748,75 @@ async function stopServerRecording() {
   }
 }
 
-if (SpeechRecognition || navigator.mediaDevices) {
-  micBtn.addEventListener("click", () => {
-    if (sttMode === "server") {
-      if (!isServerRecording) startServerRecording();
-      else stopServerRecording();
-    } else if (recognizer) {
-      micBtn.classList.add("recording");
-      recognizer.start();
-    }
-  });
-} else {
-  micBtn.disabled = true;
-  micBtn.title = "Spracherkennung wird von diesem Browser nicht unterstützt.";
+if (!SpeechRecognition && !navigator.mediaDevices) {
+  pauseBtn.title = "Spracherkennung wird von diesem Browser nicht unterstützt.";
 }
+
+// --- Pause/Fortsetzen ---------------------------------------------------
+//
+// Ersetzt den frueheren Knopf-gedrueckt-halten-Mikrofonknopf: das
+// System hoert per Voreinstellung dauerhaft zu (startListening() in
+// loadPersonas()), der Knopf dient nur noch dazu, ALLES kurz
+// anzuhalten (z.B. Toilettengang, Telefonanruf) und spaeter wieder
+// aufzunehmen - siehe Anfrage vom 2026-09-22.
+
+function pauseSystem() {
+  if (paused) return;
+  paused = true;
+  pauseBtn.textContent = "▶️";
+  pauseBtn.setAttribute("aria-label", "Weiter");
+  pauseBtn.classList.remove("recording");
+  pauseBtn.classList.add("paused");
+  stopCurrentSpeech();
+  stopListening();
+  lastSpeechEndTs = null; // Pausendauer selbst ist keine echte Sprechpause der Person
+
+  // Waehrend der Pause schon mal das "Schoen, dass Sie/du wieder da
+  // sind"-Audio besorgen (siehe reaction_audio.py) - beim tatsaechlichen
+  // Fortsetzen dann ohne Netzwerk-Wartezeit sofort abspielbar. Wird nur
+  // uebernommen, falls immer noch pausiert ist, wenn die Antwort
+  // eintrifft (sonst koennte ein spaetes Ergebnis einen SPAETEREN
+  // Pause-Zyklus verfaelschen).
+  preparedResumeAudio = null;
+  if (lastUtterancePersona) {
+    fetch(`/api/reaction/${lastUtterancePersona}/resumed?user_id=${encodeURIComponent(USER_ID)}`)
+      .then((res) => (res.ok ? res.blob() : null))
+      .then((blob) => { if (paused && blob) preparedResumeAudio = blob; })
+      .catch(() => {});
+  }
+}
+
+async function resumeSystem() {
+  if (!paused) return;
+  paused = false;
+  pauseBtn.textContent = "⏸️";
+  pauseBtn.setAttribute("aria-label", "Pause");
+  pauseBtn.classList.remove("paused");
+
+  if (lastUtterancePersona) {
+    currentPersona = lastUtterancePersona;
+    markPersonaActive(currentPersona);
+    if (preparedResumeAudio) {
+      await playPreparedAudio(preparedResumeAudio);
+    } else {
+      await playReaction(lastUtterancePersona, "resumed");
+    }
+    preparedResumeAudio = null;
+    // Der zuletzt begonnene/gesagte Textblock wird von vorne
+    // wiederholt, um beim Wiedereinstieg ins Gespraech zu helfen -
+    // bewusst der GANZE zuletzt bekannte Text, nicht nur der Rest ab
+    // der Unterbrechung (siehe lastUtteranceText oben).
+    if (lastUtteranceText) {
+      speakReadyChunks(lastUtteranceText, 0, true);
+    }
+  }
+  startListening();
+}
+
+pauseBtn.addEventListener("click", () => {
+  if (paused) resumeSystem();
+  else pauseSystem();
+});
 
 // Sicherheitsnetz fuer die Avatar-Buehne: falls "ended"/"end"/"error"
 // aus irgendeinem Grund nie feuert (keine Stimme installiert, Geraet
@@ -754,6 +958,7 @@ function playAudio(audio, text, myGeneration) {
     if (myGeneration !== speechGeneration) { resolve(); return; }
     currentAudio = audio;
     speakingPersona = currentPersona;
+    lastSpeechEndTs = null; // eigene Ausgabe beginnt - kein Sprechpausen-Messwert daraus ableiten
     renderAvatarStage();
     const clearSafetyNet = scheduleStageSafetyNet(text);
     audio.addEventListener("ended", () => {
@@ -774,6 +979,7 @@ function speakChunkOnDevice(text, myGeneration) {
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = "de-AT";
     speakingPersona = currentPersona;
+    lastSpeechEndTs = null; // eigene Ausgabe beginnt - kein Sprechpausen-Messwert daraus ableiten
     renderAvatarStage();
     const clearSafetyNet = scheduleStageSafetyNet(text);
     const finish = () => { clearSafetyNet(); resolve(); };
