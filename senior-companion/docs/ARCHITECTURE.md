@@ -236,6 +236,62 @@ Eingrenzungs-Technik ist damit keine Nebensache, sondern die
 Voraussetzung dafür, dass die verzweigte Vorausberechnung oben
 überhaupt für echte (nicht nur Ja/Nein-)Themenwahl funktioniert.
 
+**Datenstruktur: ein Baum, kein Stack.** Ein Stack ist linear (eine
+Reihenfolge, rein/raus); was hier gebraucht wird, verzweigt an jedem
+Entscheidungspunkt (Ja/Nein, Themenwahl, offene Lücke) in mehrere
+gleichzeitige Möglichkeiten – strukturell verwandt mit spekulativer
+Ausführung bei Prozessoren (Branch Prediction: beide Zweige vorsorglich
+rechnen, den falschen verwerfen) und mit von einer KI statt von Hand
+erzeugten Dialogbäumen (wie in Rollenspielen mit Gesprächsoptionen).
+Grobes Modell:
+- Jeder Knoten: eine mögliche Äußerung (Text, ggf. Audio, Status
+  `geplant`/`wird generiert`/`fertig`/`gesprochen`/`verdorrt`) plus die
+  Bedingung, unter der sie gewählt würde ("Person sagt Ja", "Person
+  wählt Musik", "Stille nach X Sekunden", "etwas ganz anderes").
+- Ein Cursor zeigt auf den zuletzt tatsächlich bestätigten Knoten –
+  der "Stamm", unveränderliche Historie.
+- Wird ein Zweig gewählt: seine Geschwister werden gekappt (laufende
+  Generierung abgebrochen, fertige verworfen), seine Kinder werden die
+  neue Wachstumsfront.
+- **Datenformat am Stamm orientiert an der bestehenden Historie:** der
+  gegangene Weg wird Teil dessen, was ohnehin schon in `memory.py`
+  gespeichert und für RAG/Fakten-Abfragen genutzt wird
+  (`recent_messages()`, `list_facts()`) – ein bestätigter Baumknoten
+  sollte darum idealerweise schon im selben Format vorliegen wie eine
+  normal gespeicherte Nachricht, damit "Zweig bestätigen" nur noch
+  "an die Historie anhängen" bedeutet, keine Formatumwandlung braucht.
+
+**Gestufte Knospen-Tiefe statt einheitlicher Qualität.** Nicht jede
+Knospe verdient denselben Aufwand – die meisten werden ja doch nie
+gebraucht. Statt jeden Zweig bis in volle Textform UND Audio
+vorzurechnen, wächst die Ausarbeitung mit sinkendem Abstand zum
+"jetzt":
+- **~5 Sätze voraus:** nur eine abstrakte, stichwortartige Skizze/
+  Rezeptur, kein ausformulierter Text. Beispiele aus dem Gespräch:
+  "Musik: Anknüpfung an letztes Musikgespräch (RAG-Abfrage)",
+  "Politik: Tagesaktuelle Info aus vorbereiteter Ablage aus
+  Nachrecherche beziehen." Billig zu erzeugen, bindet kaum Ressourcen
+  für etwas, das mit hoher Wahrscheinlichkeit verworfen wird.
+- **~2 Sätze voraus:** aus der Skizze zu echtem, ausformuliertem Text
+  verdichtet – aber noch nicht vertont.
+- **~1 Satz voraus:** vollständig fertig (Text UND Audio), wartet nur
+  noch auf eventuelle Lücken-Füllungen.
+- **Lücken-Füllungen (z. B. ein Name) haben beim Rendering IMMER
+  oberste Priorität** – sobald der fehlende Wert bekannt ist, werden
+  seine vorbereiteten Varianten (z. B. euphorisch/nüchtern, siehe
+  oben) sofort synthetisiert und liegen bereit, noch vor allem anderen
+  in der Warteschlange.
+
+**Konsequenz für die Spracherkennung (STT): auch dort eine
+Prioritäten-Liste, nicht nur beim Sprechen.** Wenn ein vorbereiteter
+Baustein auf eine konkrete Lücke wartet (z. B. einen Namen), kann die
+Erkennung gezielt darauf ausgerichtet werden, genau dieses Stück
+zuerst/bevorzugt herauszulösen – "Wir warten auf einen Namen. Was
+immer danach noch gesagt wird: den Namen sofort, alles Andere dann."
+Vorausschauendes Sprechen und vorausschauendes Zuhören sind damit zwei
+Seiten derselben Idee, nicht nur eine einseitige Optimierung der
+Sprachausgabe.
+
 **Verwerfen ist ein akzeptierter Preis, kein Problem.** Antwortet die
 Person und lenkt das Gespräch in eine andere Richtung, wird ein
 relevanter Teil des bereits generierten (und teils schon vertonten)
