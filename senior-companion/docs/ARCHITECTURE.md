@@ -209,6 +209,33 @@ Generierung selbst wartet darauf nie.
   Standarddeutsch anzunehmen. Wie diese Information erfasst wird
   (neuer Fakt? aus der Sprachverwendung abgeleitet?) ist noch offen.
 
+**Gesprächsführung als Ermöglicher, nicht als Bevormundung.** Eine
+wirklich offene Frage wie "Worüber möchtest du als nächstes sprechen?"
+lässt sich nicht sinnvoll verzweigt vorausberechnen – die Antwort kann
+alles sein. Löst sich, indem die Persona die Frage selbst eingrenzt:
+"Worüber möchtest du als nächstes sprechen? Lieber über Politik oder
+über Musik?" Damit gibt es nur noch wenige, konkret vorbereitbare
+Antwortzweige – einen pro angebotener Option, plus **einen generischen
+Auffangzweig** für "etwas ganz anderes" (den die Person sich jederzeit
+nehmen darf, das Angebot ist eine Einladung, keine Einschränkung –
+"Der User kann es ja ohnehin über den Haufen werfen"). Beispiel
+(Wortlaut aus dem Gespräch):
+- "Politik! Sehr gut. Habe ich heute in der Zeitung gelesen ..."
+- "Musik! Wunderbar. Wir hatten zuletzt ja über Bach gesprochen ..."
+- (Auffangzweig) "`<anderes Thema>` auch gut. Du möchtest also lieber
+  über `<anderes Thema>` sprechen. Soll mir recht sein. Über
+  `<anderes Thema>` hatten wir ja zuletzt schon gesprochen. Wenn ich
+  mich recht erinnere, hattest du gemeint, dass ..."
+
+Der Auffangzweig zeigt auch, warum das nicht nur ein Trick für
+weniger Verzweigungen ist, sondern echten Wert hat: er greift auf die
+ohnehin schon bestehende Historie/Fakten-Ablage zurück (`memory.
+list_facts()`/`recent_messages()`), damit selbst eine unerwartete
+Antwort persönlich und aufmerksam wirkt, nicht generisch. Diese
+Eingrenzungs-Technik ist damit keine Nebensache, sondern die
+Voraussetzung dafür, dass die verzweigte Vorausberechnung oben
+überhaupt für echte (nicht nur Ja/Nein-)Themenwahl funktioniert.
+
 **Verwerfen ist ein akzeptierter Preis, kein Problem.** Antwortet die
 Person und lenkt das Gespräch in eine andere Richtung, wird ein
 relevanter Teil des bereits generierten (und teils schon vertonten)
