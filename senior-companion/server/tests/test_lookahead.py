@@ -53,12 +53,13 @@ def _reset_lookahead_state():
 
 class _StubPersona:
     def __init__(self, id="robin", model="tinyllama", system_prompt="Du bist Robin.",
-                 max_tokens=400, voice_id="de_DE-thorsten-low"):
+                 max_tokens=400, voice_id="de_DE-thorsten-low", voice_speaker_id=None):
         self.id = id
         self.model = model
         self.system_prompt = system_prompt
         self.max_tokens = max_tokens
         self.voice_id = voice_id
+        self.voice_speaker_id = voice_speaker_id
 
 
 def _canned_stream_factory(replies):
@@ -322,6 +323,40 @@ async def test_extend_chain_stops_writing_after_generation_bumped(monkeypatch):
     await task
 
     assert chain.levels == []
+
+
+async def test_render_head_audio_passes_persona_speaker_id_and_caches_with_it(monkeypatch):
+    """Mehrsprecher-Stimmen (z.B. de_DE-mls-medium) brauchen speaker_id,
+    um den richtigen Sprecher aus der EINEN .onnx-Datei zu waehlen -
+    muss sowohl an speech_client.synthesize durchgereicht werden ALS
+    AUCH Teil des _audio_cache-Schluessels sein (sonst wuerden zwei
+    Personas mit gleichem voice_id aber unterschiedlichem speaker_id
+    sich gegenseitig die falsche Stimme aus dem Cache liefern)."""
+    captured = {}
+
+    async def fake_synthesize(text, voice, speaker_id=None):
+        captured["text"] = text
+        captured["voice"] = voice
+        captured["speaker_id"] = speaker_id
+        return b"wav-bytes"
+
+    monkeypatch.setattr(lookahead.speech_client, "synthesize", fake_synthesize)
+    persona = _StubPersona(voice_id="de_DE-mls-medium", voice_speaker_id=3)
+    monkeypatch.setattr(lookahead.config, "PERSONAS", {"robin": persona})
+
+    user_id = "lookahead_speaker_id_user"
+    chain = lookahead.Chain(user_id=user_id, persona_id="robin")
+    chain.levels.append(lookahead.ChainLevel(
+        depth=1, kind="continue", text="Hallo, wie geht's dir heute?",
+        path="1", parent_path=None,
+    ))
+    lookahead._chains[user_id] = chain
+
+    await lookahead._render_head_audio(user_id, chain.generation)
+
+    assert captured["speaker_id"] == 3
+    first_sentence = lookahead.autoturn._first_sentence("Hallo, wie geht's dir heute?")
+    assert lookahead._audio_cache[("de_DE-mls-medium", 3, first_sentence)] == b"wav-bytes"
 
 
 # --- Runde 2: Verzweigungsbaum ---------------------------------------------

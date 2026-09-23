@@ -131,7 +131,7 @@ _VIRTUAL_ROOT = _VirtualRoot()
 
 
 _chains: dict = {}          # user_id -> Chain, hoechstens eine pro Nutzer:in
-_audio_cache: dict = {}     # (voice_id, text) -> wav bytes, nur fuer den jeweils aktuellen Head
+_audio_cache: dict = {}     # (voice_id, speaker_id, text) -> wav bytes, nur fuer den jeweils aktuellen Head
 
 _levels_built = {d: 0 for d in range(1, 6)}      # Schluessel = Tiefe bei Erzeugung
 _levels_delivered = {d: 0 for d in range(1, 6)}  # Schluessel = urspruengliche Tiefe
@@ -502,7 +502,7 @@ async def _render_head_audio(user_id: str, generation: int) -> None:
     first_sentence = autoturn._first_sentence(head.text)
 
     try:
-        audio = await speech_client.synthesize(first_sentence, persona.voice_id)
+        audio = await speech_client.synthesize(first_sentence, persona.voice_id, persona.voice_speaker_id)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -520,7 +520,7 @@ async def _render_head_audio(user_id: str, generation: int) -> None:
     if head_now is None or head_now.path != head.path:
         return
     head_now.audio_ready = True
-    _audio_cache[(persona.voice_id, first_sentence)] = audio
+    _audio_cache[(persona.voice_id, persona.voice_speaker_id, first_sentence)] = audio
 
 
 def _prune_siblings_and_confirm(chain: Chain, confirmed: ChainLevel) -> None:

@@ -718,7 +718,7 @@ def test_stt_endpoint_returns_transcribed_text(monkeypatch):
 def test_tts_endpoint_returns_audio_using_persona_voice(monkeypatch):
     captured = {}
 
-    async def fake_synthesize(text, voice):
+    async def fake_synthesize(text, voice, speaker_id=None):
         captured["text"] = text
         captured["voice"] = voice
         return b"RIFF....WAVEfake"
@@ -741,7 +741,7 @@ def test_tts_endpoint_returns_audio_using_persona_voice(monkeypatch):
 def test_tts_endpoint_falls_back_to_default_persona_for_unknown_id(monkeypatch):
     captured = {}
 
-    async def fake_synthesize(text, voice):
+    async def fake_synthesize(text, voice, speaker_id=None):
         captured["voice"] = voice
         return b"wav-bytes"
 
@@ -761,12 +761,13 @@ def test_tts_endpoint_returns_cached_audio_without_calling_synthesize(monkeypatc
     """Integrationspunkt 7 (siehe lookahead.py): ein vorab per
     lookahead._render_head_audio gerenderter (voice_id, text)-Eintrag
     muss von /api/tts gefunden werden, statt neu zu synthetisieren."""
-    async def fake_synthesize(text, voice):
+    async def fake_synthesize(text, voice, speaker_id=None):
         raise AssertionError("Cache-Treffer haette synthesize() gar nicht aufrufen duerfen")
 
     monkeypatch.setattr(speech_client, "synthesize", fake_synthesize)
     voice_id = main.PERSONAS["freundin"].voice_id
-    lookahead._audio_cache[(voice_id, "Schön, dass du da bist!")] = b"vorab-gerendertes-wav"
+    speaker_id = main.PERSONAS["freundin"].voice_speaker_id
+    lookahead._audio_cache[(voice_id, speaker_id, "Schön, dass du da bist!")] = b"vorab-gerendertes-wav"
 
     try:
         with TestClient(main.app) as client:
@@ -780,10 +781,32 @@ def test_tts_endpoint_returns_cached_audio_without_calling_synthesize(monkeypatc
         lookahead._audio_cache.clear()
 
 
+def test_tts_endpoint_passes_persona_voice_speaker_id_to_synthesize(monkeypatch):
+    captured = {}
+
+    async def fake_synthesize(text, voice, speaker_id=None):
+        captured["speaker_id"] = speaker_id
+        return b"wav-bytes"
+
+    monkeypatch.setattr(speech_client, "synthesize", fake_synthesize)
+    original = main.PERSONAS["freundin"].voice_speaker_id
+    main.PERSONAS["freundin"].voice_speaker_id = 2
+    try:
+        with TestClient(main.app) as client:
+            r = client.post(
+                "/api/tts",
+                json={"text": "Ein neuer Satz fuer den Sprecher-Test.", "persona_id": "freundin"},
+            )
+        assert r.status_code == 200
+        assert captured["speaker_id"] == 2
+    finally:
+        main.PERSONAS["freundin"].voice_speaker_id = original
+
+
 def test_tts_endpoint_cache_miss_falls_back_to_synthesize_unchanged(monkeypatch):
     captured = {}
 
-    async def fake_synthesize(text, voice):
+    async def fake_synthesize(text, voice, speaker_id=None):
         captured["text"] = text
         return b"live-synthetisiert"
 
@@ -806,7 +829,7 @@ def test_tts_endpoint_cache_miss_falls_back_to_synthesize_unchanged(monkeypatch)
 def test_reaction_endpoint_returns_audio_for_known_situation(monkeypatch):
     captured = {}
 
-    async def fake_synthesize(text, voice):
+    async def fake_synthesize(text, voice, speaker_id=None):
         captured["text"] = text
         captured["voice"] = voice
         return b"wav-bytes"
@@ -838,7 +861,7 @@ def test_reaction_endpoint_404_for_unknown_persona():
 def test_reaction_endpoint_uses_du_variant_when_user_already_offered_du(monkeypatch):
     captured = {}
 
-    async def fake_synthesize(text, voice):
+    async def fake_synthesize(text, voice, speaker_id=None):
         captured["text"] = text
         return b"wav-bytes"
 
@@ -855,7 +878,7 @@ def test_reaction_endpoint_uses_du_variant_when_user_already_offered_du(monkeypa
 def test_reaction_endpoint_defaults_to_sie_without_user_id(monkeypatch):
     captured = {}
 
-    async def fake_synthesize(text, voice):
+    async def fake_synthesize(text, voice, speaker_id=None):
         captured["text"] = text
         return b"wav-bytes"
 

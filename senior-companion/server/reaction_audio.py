@@ -8,17 +8,21 @@ Persona faellt ins Wort, ...) ohne Code-Aenderung hier ergaenzt werden
 koennen - nur neue Eintraege in reaction_phrases noetig.
 
 Wichtig fuer den Zweck ("sofort abspielbar, ohne die Unterbrechung
-noch laenger zu verzoegern"): pro (Stimme, Satz)-Kombination wird nur
-EINMAL pro Prozesslaufzeit synthetisiert, danach kommt die Antwort
-aus dem Cache. Bewusst lazy (beim ersten Bedarf) statt eager beim
-Start synthetisiert - haelt den Serverstart einfach, auf Kosten einer
-etwas langsameren allerersten Unterbrechung pro Person/Stimme.
+noch laenger zu verzoegern"): pro (Stimme, Sprecher-Index, Satz)-
+Kombination wird nur EINMAL pro Prozesslaufzeit synthetisiert, danach
+kommt die Antwort aus dem Cache - der Sprecher-Index gehoert mit in
+den Schluessel, sonst wuerden zwei Personas mit derselben Mehrsprecher-
+Stimmendatei (z.B. de_DE-mls-medium), aber unterschiedlichem Sprecher,
+sich gegenseitig die falsche Stimme unterschieben. Bewusst lazy (beim
+ersten Bedarf) statt eager beim Start synthetisiert - haelt den
+Serverstart einfach, auf Kosten einer etwas langsameren allerersten
+Unterbrechung pro Person/Stimme.
 """
 import random
 
 import speech_client
 
-_cache: dict[tuple[str, str], bytes] = {}
+_cache: dict[tuple[str, int | None, str], bytes] = {}
 
 
 async def get_reaction_audio(persona, situation: str, anrede: str = "sie") -> bytes | None:
@@ -40,7 +44,7 @@ async def get_reaction_audio(persona, situation: str, anrede: str = "sie") -> by
         if not phrases:
             return None
     text = random.choice(phrases)
-    key = (persona.voice_id, text)
+    key = (persona.voice_id, persona.voice_speaker_id, text)
     if key not in _cache:
-        _cache[key] = await speech_client.synthesize(text, persona.voice_id)
+        _cache[key] = await speech_client.synthesize(text, persona.voice_id, persona.voice_speaker_id)
     return _cache[key]

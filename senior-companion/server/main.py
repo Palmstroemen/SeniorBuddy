@@ -275,8 +275,10 @@ async def text_to_speech(body: TTSRequest):
     # Chunk-Grenze: erster Satz eines Ketten-Heads, siehe
     # lookahead._render_head_audio) schon vorab synthetisiert hat -
     # bei jedem Cache-Miss unveraendertes Verhalten von vorher.
-    cached = lookahead._audio_cache.get((persona.voice_id, body.text))
-    audio_bytes = cached if cached is not None else await speech_client.synthesize(body.text, persona.voice_id)
+    cached = lookahead._audio_cache.get((persona.voice_id, persona.voice_speaker_id, body.text))
+    audio_bytes = cached if cached is not None else await speech_client.synthesize(
+        body.text, persona.voice_id, persona.voice_speaker_id,
+    )
     return Response(content=audio_bytes, media_type="audio/wav")
 
 
@@ -1195,6 +1197,7 @@ class PersonaFieldsIn(BaseModel):
     gender: str = "neutral"
     default_anrede: str = "sie"
     voice_id: str = ""
+    voice_speaker_id: int | None = Field(None, ge=0)
     system_prompt: str
     face_eyebrows: str = "neutral"
     face_eyes: str = "happy"

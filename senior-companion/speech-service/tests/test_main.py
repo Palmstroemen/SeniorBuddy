@@ -47,6 +47,67 @@ def test_synthesize_unknown_voice_returns_404():
     assert r.status_code == 404
 
 
+# Piper-Mehrsprecher-Stimmen (z.B. de_DE-mls-medium) waehlen die
+# konkrete Stimme ueber speaker_id (piper.config.SynthesisConfig) - wir
+# reichen den Wert nur durch, die eigentliche Mehrsprecher-Synthese ist
+# Pipers Sache, nicht unsere. Zwei Tests: einer beweist die genaue
+# Durchreichung (per Spy auf _get_voice, da ein reiner "kommt 200
+# zurueck"-Test denselben Wert auch bei kaputter/fehlender
+# Durchreichung liefern wuerde - echte Regression waere sonst
+# unsichtbar), einer beweist, dass ein echtes Einsprecher-Modell
+# speaker_id klaglos akzeptiert (kein Absturz bei num_speakers=1).
+
+def _make_spy_voice(captured):
+    """wav_file ist beim echten Aufruf bereits ein offenes
+    wave.Wave_write (siehe main.py: `with wave.open(buffer, "wb") as
+    wav_file`) - Piper setzt normalerweise selbst Kanal/Breite/Rate,
+    bevor es Frames schreibt. Der Spy schreibt keine echten Frames,
+    muss diese drei Werte aber trotzdem setzen, sonst schlaegt das
+    Schliessen des WAV beim Verlassen des with-Blocks fehl."""
+    class _SpyVoice:
+        def synthesize_wav(self, text, wav_file, syn_config=None, **kwargs):
+            captured["syn_config"] = syn_config
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(22050)
+    return _SpyVoice()
+
+
+def test_synthesize_passes_speaker_id_through_to_piper_synthesis_config(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(main, "_get_voice", lambda voice_name: _make_spy_voice(captured))
+
+    resp = client.post(
+        "/synthesize",
+        json={"text": "Test", "voice": "de_DE-thorsten-low", "speaker_id": 3},
+    )
+    assert resp.status_code == 200
+    assert captured["syn_config"].speaker_id == 3
+
+
+def test_synthesize_without_speaker_id_passes_none_to_synthesis_config(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(main, "_get_voice", lambda voice_name: _make_spy_voice(captured))
+
+    resp = client.post("/synthesize", json={"text": "Test", "voice": "de_DE-thorsten-low"})
+    assert resp.status_code == 200
+    assert captured["syn_config"] is None
+
+
+def test_synthesize_accepts_speaker_id_against_real_single_speaker_voice():
+    r = client.post(
+        "/synthesize",
+        json={
+            "text": "Guten Tag, wie geht es Ihnen heute?",
+            "voice": "de_DE-thorsten-low",
+            "speaker_id": 0,
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "audio/wav"
+    assert len(r.content) > 1000
+
+
 def test_list_voices_includes_real_installed_voice():
     r = client.get("/voices")
     assert r.status_code == 200

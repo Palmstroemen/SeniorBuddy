@@ -115,12 +115,20 @@ async def transcribe(audio: UploadFile):
 class SynthesizeRequest(BaseModel):
     text: str
     voice: str
+    # Nur fuer Mehrsprecher-Stimmen relevant (z.B. de_DE-mls-medium -
+    # mehrere Stimmen in EINER .onnx-Datei, ueber speaker_id waehlbar).
+    # None = Pipers eigener Standard (unveraendertes Verhalten fuer alle
+    # bisherigen Einsprecher-Stimmen).
+    speaker_id: int | None = None
 
 
 @app.post("/synthesize")
 async def synthesize(body: SynthesizeRequest):
+    from piper.config import SynthesisConfig
+
     voice = _get_voice(body.voice)
+    syn_config = SynthesisConfig(speaker_id=body.speaker_id) if body.speaker_id is not None else None
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
-        voice.synthesize_wav(body.text, wav_file)
+        voice.synthesize_wav(body.text, wav_file, syn_config=syn_config)
     return Response(content=buffer.getvalue(), media_type="audio/wav")

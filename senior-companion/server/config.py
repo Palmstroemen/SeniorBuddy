@@ -50,6 +50,11 @@ class PersonaConfig:
     # relevant, wenn TTS auf dem Server laeuft (siehe speech-service/).
     # Muss dort unter voices/<voice_id>.onnx liegen (speech-service/setup.sh).
     voice_id: str = ""
+    # Nur fuer Mehrsprecher-Piper-Stimmen relevant (z.B. de_DE-mls-medium -
+    # mehrere Stimmen in EINER .onnx-Datei, ueber einen Index waehlbar,
+    # siehe piper.config.SynthesisConfig). None = Pipers eigener Standard
+    # (unveraendertes Verhalten fuer alle Einsprecher-Stimmen wie thorsten).
+    voice_speaker_id: int | None = None
     system_prompt: str = ""
     # Gesichts-Bauteile fuer den Strichgesicht-Avatar (siehe
     # client/js/app.js's avatarSvg(), Bauteile aus
