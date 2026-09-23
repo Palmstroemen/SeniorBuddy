@@ -994,7 +994,34 @@ async def room_chat(websocket: WebSocket, user_id: str):
             last_user_message_ts = time.time()
             consecutive_auto_turns = 0
             wrapup_sent = False
-            lookahead.discard_chain(user_id, reason="interrupted")
+
+            # Verzweigungs-Bestaetigung (Runde 2): sitzt der Cursor der
+            # laufenden Kette gerade an einer schon gestellten Frage
+            # (fork_root, siehe lookahead.py), wird die echte Antwort
+            # zuerst gegen die vorbereiteten Zweige geprueft - passt
+            # einer, kann die schon fertige Fortsetzung SOFORT
+            # ausgeliefert werden, ganz ohne live LLM-Call. Passt
+            # keiner (oder es gibt gar keine wartende Frage), verhaelt
+            # sich das exakt wie bisher: Kette verwerfen, normal
+            # reaktiv weiter unten generieren.
+            chain_owner_id = lookahead.chain_persona_id(user_id)
+            lookahead_confirmed = (
+                lookahead.consume_head(user_id, chain_owner_id, user_reply_text=user_text)
+                if chain_owner_id is not None else None
+            )
+            if lookahead_confirmed is None:
+                lookahead.discard_chain(user_id, reason="interrupted")
+            else:
+                owner_persona = PERSONAS.get(chain_owner_id) or PERSONAS[FALLBACK_PERSONA]
+                memory.add_message(user_id, chain_owner_id, "user", user_text)
+                present = room.present_personas(user_id)
+                await _send_presence_if_changed(present)
+                await _deliver_auto_turn(
+                    user_id, owner_persona, websocket, present,
+                    lookahead_confirmed.text, memory.active_topic(user_id, chain_owner_id),
+                )
+                lookahead.start_chain_for_speaker(user_id, owner_persona)
+                continue
 
             candidates_map = {pid: p.address_name for pid, p in PERSONAS.items()}
             addressed = room.detect_addressed_persona(user_text, candidates_map)

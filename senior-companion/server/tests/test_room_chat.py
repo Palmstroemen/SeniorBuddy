@@ -1042,3 +1042,72 @@ def test_room_chat_real_user_message_discards_chain_and_increments_stat(monkeypa
 
     assert lookahead._chains.get(user_id) is None
     assert lookahead._discarded_interrupted == 1
+
+
+def test_room_chat_confirms_branch_and_stores_it_as_real_history_on_matching_reply(monkeypatch):
+    async def forbidden_stream(model, system_prompt, messages, max_tokens=400):
+        raise AssertionError(
+            "run_turn() haette wegen einer bestaetigten Verzweigung NICHT "
+            "live aufgerufen werden duerfen"
+        )
+        yield  # pragma: no cover - nur um eine Async-Generator-Funktion zu bleiben
+
+    monkeypatch.setattr(main.llm_client, "stream", forbidden_stream)
+
+    user_id = "lookahead_room_confirm_a"
+    room.touch(user_id, "freundin")
+
+    chain = lookahead.Chain(user_id=user_id, persona_id="freundin", cursor_path="1")
+    chain.levels.append(lookahead.ChainLevel(
+        depth=2, kind="continue_new_topic", text="Politik-Fortsetzung, ganz einzigartig",
+        path="2a", parent_path="1", branch_kind="fork_option", trigger_condition="politik",
+    ))
+    chain.levels.append(lookahead.ChainLevel(
+        depth=2, kind="continue_new_topic", text="Musik-Fortsetzung, ganz einzigartig",
+        path="2b", parent_path="1", branch_kind="fork_option", trigger_condition="musik",
+    ))
+    chain.levels.append(lookahead.ChainLevel(
+        depth=2, kind="continue_new_topic", text="", path="2c", parent_path="1",
+        branch_kind="fork_catchall", trigger_condition=lookahead.CATCHALL_TRIGGER,
+    ))
+    lookahead._chains[user_id] = chain
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect(f"/ws/room/{user_id}") as ws:
+            ws.send_text("Politik bitte")
+            msgs = _drain_until(ws, lambda m: m.get("type") == "done" and m.get("auto"))
+
+    token_msgs = [m for m in msgs if m.get("type") == "token" and m.get("auto")]
+    assert any(m["content"] == "Politik-Fortsetzung, ganz einzigartig" for m in token_msgs)
+
+    history = memory.recent_messages(user_id, "freundin", limit=20)
+    assert any(m["role"] == "user" and m["content"] == "Politik bitte" for m in history)
+    assert any(
+        m["role"] == "assistant" and m["content"] == "Politik-Fortsetzung, ganz einzigartig"
+        for m in history
+    )
+
+
+def test_room_chat_discards_chain_normally_when_no_fork_pending_on_real_message(monkeypatch):
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield "Normale reaktive Antwort."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+
+    user_id = "lookahead_room_confirm_b"
+    room.touch(user_id, "freundin")
+
+    chain = lookahead.Chain(user_id=user_id, persona_id="freundin", cursor_path="1")
+    chain.levels.append(lookahead.ChainLevel(
+        depth=2, kind="continue_new_topic", text="Naechster normaler Satz",
+        path="2", parent_path="1",
+    ))
+    lookahead._chains[user_id] = chain
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect(f"/ws/room/{user_id}") as ws:
+            ws.send_text("Erzaehl mir was ganz anderes")
+            _drain_until(ws, lambda m: m.get("type") == "done" and not m.get("auto"))
+
+    assert lookahead._chains.get(user_id) is None
+    assert lookahead._discarded_interrupted == 1

@@ -98,7 +98,7 @@ def test_lookahead_debug_endpoint_empty_object_when_no_chain():
 
 def test_lookahead_debug_endpoint_reports_chain_state():
     chain = lookahead.Chain(user_id="lookahead_debug_endpoint_user", persona_id="freundin")
-    chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Eins", audio=b"wav"))
+    chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Eins", audio_ready=True))
     chain.levels.append(lookahead.ChainLevel(depth=2, kind="continue_new_topic", text="Zwei"))
     lookahead._chains["lookahead_debug_endpoint_user"] = chain
     try:

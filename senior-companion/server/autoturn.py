@@ -175,6 +175,48 @@ AUTO_TURN_SIMILARITY_LOOKBACK = 5
 AUTO_TURN_OPENER_SIMILARITY_THRESHOLD = 0.55
 
 
+# Nur fuer lookahead.py's Ketten-Aufbau angehaengt (NIE fuer
+# run_auto_turn()'s reaktiven Pfad - der liefert sofort aus und
+# braucht keine Verzweigungs-Metadaten, die Tag-Anweisung wuerde den
+# schon fein abgestimmten reaktiven Prompts nur unnoetig Tonfall
+# hinzufuegen). Selbst-Tagging in DERSELBEN Generierung statt eines
+# zweiten Klassifikations-Calls (wie sentiment_job.py's separater
+# Nacht-Lauf) - eine zweite Ollama-Anfrage wuerde genau an der Stelle
+# zusaetzliche Latenz kosten, an der dieses Feature ueberhaupt Latenz
+# sparen soll. Format-Konvention angelehnt an sentiment_job.py's
+# STIMMUNG:/HALTUNG:-Muster, ebenso defensiv geparst (siehe
+# lookahead._parse_branch_tag) - ein Fehlformat faellt immer auf
+# "keine Verzweigung" zurueck, nie auf eine erfundene.
+BRANCH_TAG_INSTRUCTION = (
+    "Stelle nur alle 3-4 Saetze eine Frage, dazwischen erzaehl einfach "
+    "weiter, ohne zu fragen. Wenn du gerade eine Frage stellst, die "
+    "sich mit Ja/Nein oder einer kleinen, konkret genannten Auswahl "
+    "beantworten laesst (z.B. 'Moegen Sie lieber X oder Y?'), haenge "
+    "GANZ AM ENDE deiner Antwort, nach einer Leerzeile, GENAU dieses "
+    "Format an, ohne weitere Worte danach:\n"
+    "---\n"
+    "VERZWEIGUNG: ja\n"
+    "OPTIONEN: <Option 1> | <Option 2>\n"
+    "Ist deine Frage offen (z.B. nach einem Namen, einer Meinung, "
+    "etwas frei Erzaehltem) oder stellst du gerade keine Frage, haenge "
+    "stattdessen genau dieses Format an:\n"
+    "---\n"
+    "VERZWEIGUNG: keine"
+)
+
+# Fuer den synthetischen "hypothetischen Antwort"-Turn beim Aufbau
+# EINES Verzweigungs-Zweigs (siehe lookahead._extend_chain) - dieselbe
+# "Ollama ist zustandslos, wir steuern das Vorwissen selbst"-Technik
+# wie in Runde 1, jetzt auch fuer einen fabrizierten NUTZER-Turn
+# verwendet, nicht nur fabrizierte eigene Turns.
+BRANCH_ANSWER_CONTINUATION_PROMPT = (
+    "Die Person hat gerade mit \"{option}\" geantwortet auf deine "
+    "letzte Frage. Setze das Gespraech passend dazu fort. Erfinde "
+    "dabei KEINE neuen Details, Angebote oder Erlebnisse, die nicht "
+    "schon vorkamen."
+)
+
+
 def _first_sentence(text: str) -> str:
     match = re.match(r"^[\s\S]*?[.!?]+", text)
     return match.group(0) if match else text
