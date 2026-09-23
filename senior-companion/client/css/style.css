@@ -160,9 +160,12 @@ body {
 .version-badge {
   flex-shrink: 0;
   font-family: monospace;
-  font-size: 11px;
+  font-size: 16px;
   color: var(--ink-soft);
-  opacity: 0.6;
+  opacity: 0.85;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  padding: 2px 6px;
 }
 
 /* Temporaeres Entwicklungs-Werkzeug, siehe index.html's Kommentar

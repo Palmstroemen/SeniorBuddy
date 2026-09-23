@@ -337,6 +337,12 @@ async function loadVersionBadge() {
     const res = await fetch("/api/version");
     const { commit } = await res.json();
     versionBadge.textContent = commit;
+    // Idee (2026-09-23): die ersten 6 Hex-Stellen des Commit-Kurzhashes
+    // direkt als Rahmenfarbe verwenden, statt sie nur als Text zu
+    // zeigen - ein Farbwechsel springt sofort ins Auge, wenn sich die
+    // Version aendert, ganz ohne die Ziffern vergleichen zu muessen.
+    const colorHex = commit.slice(0, 6);
+    versionBadge.style.borderColor = /^[0-9a-f]{6}$/i.test(colorHex) ? `#${colorHex}` : "transparent";
   } catch (err) {
     versionBadge.textContent = "";
   }
