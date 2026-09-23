@@ -10,6 +10,18 @@
 # nur als "low". Diese drei hier sind also fuers Erste testweise fuer
 # Toni (technikerin, config.py) gedacht, plus die emotionale Variante
 # als zusaetzliche Geschmacksprobe.
+#
+# de_DE-mls-medium ist die einzige weitere deutsche Piper-Stimme jenseits
+# von "low" - UND ein Mehrsprecher-Modell (mehrere Stimmen in einer
+# Datei, ueber speaker_id waehlbar, siehe piper.config.SynthesisConfig).
+# Koennte also potenziell 2-3 unterschiedliche, hoeherwertige Stimmen
+# fuer Robin/Alex/Wallner aus EINER Datei liefern - der Standard-Sprecher
+# (speaker_id 0) laesst sich schon heute wie jede andere Stimme nutzen,
+# ein ANDERER Sprecher braucht noch eine kleine Code-Erweiterung (heute
+# ist speaker_id nirgends durchgereicht, siehe main.py::synthesize).
+# Session-Notiz 2026-09-23: Stimmen-Konsistenz zwischen Personas ist in
+# dieser fruehen Testphase (noch kein Rollout, keine Nutzer:innen mit
+# Gewoehnungseffekt) ausdruecklich egal - frei experimentieren erlaubt.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -35,6 +47,7 @@ fetch_voice() {
 
 fetch_voice "thorsten/high/de_DE-thorsten-high"
 fetch_voice "thorsten_emotional/medium/de_DE-thorsten_emotional-medium"
+fetch_voice "mls/medium/de_DE-mls-medium"
 
 echo ""
 echo "== Fertig. Neu geladene Stimmen: =="
