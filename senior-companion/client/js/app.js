@@ -621,9 +621,28 @@ textInput.addEventListener("keydown", (e) => {
 // komplett lokal (Tailnet), siehe README, Abschnitt "Sprache auf dem
 // Server".
 
-function showLatencyNotice(text) {
-  const bubble = addBubble(text, "notice");
-  setTimeout(() => bubble.remove(), 4000);
+const latencyBadge = document.getElementById("latencyBadge");
+const latencyBadgeIcon = document.getElementById("latencyBadgeIcon");
+const latencyBadgeLabel = document.getElementById("latencyBadgeLabel");
+const latencyBadgeValue = document.getElementById("latencyBadgeValue");
+let latencyBadgeHideTimer = null;
+
+// Ersetzt die fruehere Pro-Haeppchen-Sprechblase (Session-Notiz
+// 2026-09-24: erschien/verschwand bei JEDEM einzelnen Sprachausgabe-
+// Haeppchen neu und liess die Chat-Ansicht "unruhig" wirken). Ein
+// einziges, fest positioniertes Element (siehe .latency-badge,
+// index.html) wird nur noch in-place aktualisiert - kein DOM-Auf-/Abbau
+// mehr, also kein Sprechblasen-Reflow. Reine Entwicklungs-/Diagnose-
+// Anzeige: misst die Laufzeit des jeweiligen /api/tts- bzw.
+// /api/stt-Roundtrips zum Server, nicht die Laenge der Aufnahme/Antwort
+// selbst.
+function showLatencyBadge(icon, label, seconds) {
+  latencyBadgeIcon.textContent = icon;
+  latencyBadgeLabel.textContent = label;
+  latencyBadgeValue.textContent = `${seconds}s`;
+  latencyBadge.hidden = false;
+  clearTimeout(latencyBadgeHideTimer);
+  latencyBadgeHideTimer = setTimeout(() => { latencyBadge.hidden = true; }, 4000);
 }
 
 // Dauer-Zuhoeren statt Knopf-gedrueckt-halten (siehe pauseBtn weiter
@@ -770,7 +789,7 @@ async function stopServerRecording() {
     if (!res.ok) throw new Error("Sprachdienst antwortete mit Fehler");
     const data = await res.json();
     const seconds = ((performance.now() - start) / 1000).toFixed(1);
-    showLatencyNotice(`Spracherkennung (Server): ${seconds}s`);
+    showLatencyBadge("🎙️", "Server", seconds);
     if (data.text) {
       textInput.value = data.text;
       sendMessage();
@@ -975,7 +994,7 @@ async function speakChunkOnServer(text, myGeneration) {
     const blob = await res.blob();
     if (myGeneration !== speechGeneration) return; // ueberholt waehrend des Wartens
     const seconds = ((performance.now() - start) / 1000).toFixed(1);
-    showLatencyNotice(`Sprachausgabe (Server): ${seconds}s`);
+    showLatencyBadge("🔊", "Server", seconds);
     await playAudio(new Audio(URL.createObjectURL(blob)), text, myGeneration);
   } catch (err) {
     if (myGeneration !== speechGeneration) return; // ueberholt waehrend des Wartens

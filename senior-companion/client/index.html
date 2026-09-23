@@ -43,6 +43,17 @@
   <div class="welcome">
     <p class="hint-loading" id="chatHint">Einen Moment, wir bereiten alles vor …</p>
   </div>
+  <!-- Diagnose-Anzeige (Session-Notiz 2026-09-24): wie lange der
+       letzte Server-Sprach-Roundtrip (Erkennung ODER Ausgabe)
+       gedauert hat. Bewusst EIN statisches, in-place aktualisiertes
+       Element statt einer eigenen Sprechblase pro Haeppchen (siehe
+       showLatencyBadge() in app.js) - sonst wandert/haepft die
+       Chat-Ansicht bei jedem einzelnen Sprachausgabe-Haeppchen. -->
+  <div class="latency-badge" id="latencyBadge" hidden>
+    <span class="latency-badge-icon" id="latencyBadgeIcon">🔊</span>
+    <span class="latency-badge-label" id="latencyBadgeLabel">Server</span>
+    <span class="latency-badge-value" id="latencyBadgeValue"></span>
+  </div>
 </main>
 
 <main class="avatar-stage" id="avatarStage" aria-live="polite">
