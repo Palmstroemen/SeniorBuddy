@@ -114,6 +114,24 @@ def test_list_voices_includes_real_installed_voice():
     assert "de_DE-thorsten-low" in r.json()
 
 
+# Fuers Sprecher-Dropdown im Persona-Designer (client/js/admin.js): eine
+# Mehrsprecher-Stimme (z.B. de_DE-mls-medium) braucht num_speakers/
+# speaker_id_map, um ueberhaupt eine Auswahl anbieten zu koennen. Direkt
+# aus der .onnx.json gelesen - kein Laden des vollen PiperVoice-Modells
+# noetig, nur fuer diese Metadaten.
+def test_voice_speakers_reports_single_speaker_for_real_installed_voice():
+    r = client.get("/voices/de_DE-thorsten-low/speakers")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["num_speakers"] == 1
+    assert data["speaker_id_map"] == {}
+
+
+def test_voice_speakers_unknown_voice_returns_404():
+    r = client.get("/voices/does_not_exist/speakers")
+    assert r.status_code == 404
+
+
 def test_transcribe_roundtrip_with_real_synthesized_speech():
     synth = client.post(
         "/synthesize",

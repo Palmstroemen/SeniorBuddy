@@ -11,6 +11,7 @@ weil hier (anders als dort) CPU-Isolation von schwaecheren Tablets und
 vom Chat-Server ausdruecklich gewuenscht ist.
 """
 import io
+import json
 import logging
 import tempfile
 import wave
@@ -92,6 +93,25 @@ async def list_voices():
     voices/*.onnx) - fuer das Stimmen-Dropdown im Persona-Designer
     (server/main.py's GET /admin/voices, ueber speech_client.list_voices())."""
     return sorted(p.stem for p in config.VOICES_DIR.glob("*.onnx"))
+
+
+@app.get("/voices/{voice_name}/speakers")
+async def voice_speakers(voice_name: str):
+    """Sprecher-Metadaten einer Stimme - fuers Sprecher-Dropdown im
+    Persona-Designer (client/js/admin.js): Mehrsprecher-Stimmen wie
+    de_DE-mls-medium buendeln mehrere Stimmen in EINER .onnx-Datei,
+    ueber speaker_id (piper.config.SynthesisConfig) waehlbar. Liest
+    direkt aus der .onnx.json - kein Laden des vollen PiperVoice-Modells
+    noetig, nur fuer diese Metadaten."""
+    config_path = config.VOICES_DIR / f"{voice_name}.onnx.json"
+    if not config_path.exists():
+        raise HTTPException(404, f"Stimme '{voice_name}' nicht gefunden.")
+    with open(config_path, encoding="utf-8") as f:
+        voice_config = json.load(f)
+    return {
+        "num_speakers": voice_config.get("num_speakers", 1),
+        "speaker_id_map": voice_config.get("speaker_id_map", {}),
+    }
 
 
 @app.post("/transcribe")

@@ -61,6 +61,24 @@ def test_list_admin_voices_returns_speech_service_voices(monkeypatch):
     assert r.json() == ["de_DE-thorsten-low", "de_DE-kerstin-low"]
 
 
+def test_admin_voice_speakers_requires_auth():
+    with TestClient(main.app) as client:
+        r = client.get("/admin/voices/de_DE-thorsten-low/speakers")
+    assert r.status_code == 401
+
+
+def test_admin_voice_speakers_returns_speech_service_data(monkeypatch):
+    async def fake_voice_speakers(voice_name):
+        assert voice_name == "de_DE-mls-medium"
+        return {"num_speakers": 236, "speaker_id_map": {"2450": 0, "1724": 1}}
+
+    monkeypatch.setattr(main.speech_client, "voice_speakers", fake_voice_speakers)
+    with TestClient(main.app) as client:
+        r = client.get("/admin/voices/de_DE-mls-medium/speakers", headers=ADMIN_HEADERS)
+    assert r.status_code == 200
+    assert r.json() == {"num_speakers": 236, "speaker_id_map": {"2450": 0, "1724": 1}}
+
+
 def test_set_ntfy_topic_updates_module_and_persists():
     with TestClient(main.app) as client:
         r = client.post(

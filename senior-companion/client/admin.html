@@ -116,6 +116,13 @@
           <a href="https://huggingface.co/rhasspy/piper-voices" target="_blank" rel="noopener" class="admin-external-link">weitere Stimmen suchen ↗</a>
         </span>
       </label>
+      <!-- Nur sichtbar, wenn die aktuell gewaehlte Stimme mehrere
+           Sprecher in einer Datei buendelt (z.B. de_DE-mls-medium) -
+           siehe refreshSpeakerOptions() in admin.js. -->
+      <label id="voiceSpeakerIdField" hidden>
+        Sprecher (Mehrsprecher-Stimme)
+        <select id="voiceSpeakerIdInput"></select>
+      </label>
       <label>
         Masterprompt
         <textarea id="systemPromptInput" rows="8" required></textarea>

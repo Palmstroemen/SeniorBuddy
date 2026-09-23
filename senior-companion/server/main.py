@@ -1308,6 +1308,15 @@ async def list_admin_voices():
     return await speech_client.list_voices()
 
 
+@app.get("/admin/voices/{voice_name}/speakers", dependencies=[Depends(admin_auth.require_admin)])
+async def admin_voice_speakers(voice_name: str):
+    """Sprecher-Metadaten einer Stimme (ueber den Sprachdienst, siehe
+    speech_client.voice_speakers()) - fuer das Sprecher-Dropdown im
+    Persona-Designer, das nur bei Mehrsprecher-Stimmen (z.B.
+    de_DE-mls-medium) ueberhaupt etwas anzuzeigen hat."""
+    return await speech_client.voice_speakers(voice_name)
+
+
 def _persist_all_personas():
     admin_settings.update("personas", [p.to_dict() for p in PERSONAS.values()])
 

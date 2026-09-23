@@ -163,6 +163,14 @@
   font-weight: 600;
 }
 
+/* Ohne das hier ueberschreibt die display:flex-Regel oben das
+   hidden-Attribut (höhere Spezifität durch die #personaForm-ID) -
+   betrifft aktuell #voiceSpeakerIdField (siehe admin.js's
+   refreshSpeakerOptions()), das per .hidden ein-/ausgeblendet wird. */
+#personaForm label[hidden] {
+  display: none;
+}
+
 #personaForm input[type="text"],
 #personaForm input[type="number"],
 #personaForm textarea,

@@ -8,7 +8,8 @@ const FIELD_LABELS = {
   reengagement_tendency: "Neigung", color: "Farbe", background_color: "Hintergrundfarbe",
   first_name: "Vorname", last_name: "Nachname", title: "Titel", gender: "Geschlecht",
   default_anrede: "Anrede-Voreinstellung", system_prompt: "Masterprompt",
-  voice_id: "Stimme (voice_id)", face_eyebrows: "Augenbrauen", face_eyes: "Augen",
+  voice_id: "Stimme (voice_id)", voice_speaker_id: "Sprecher (voice_speaker_id)",
+  face_eyebrows: "Augenbrauen", face_eyes: "Augen",
   face_mouth: "Mund", face_hairstyle: "Frisur", face_beard: "Bart",
   long_term_agenda: "Langzeitagenda", daily_agenda: "Tagesagenda",
   own_backstory: "Eigene Geschichte", own_interests: "Eigene Interessen",
@@ -71,6 +72,8 @@ const titleInput = document.getElementById("titleInput");
 const genderInput = document.getElementById("genderInput");
 const defaultAnredeInput = document.getElementById("defaultAnredeInput");
 const voiceIdInput = document.getElementById("voiceIdInput");
+const voiceSpeakerIdField = document.getElementById("voiceSpeakerIdField");
+const voiceSpeakerIdInput = document.getElementById("voiceSpeakerIdInput");
 const systemPromptInput = document.getElementById("systemPromptInput");
 const facePreview = document.getElementById("facePreview");
 const faceFieldsContainer = document.getElementById("faceFieldsContainer");
@@ -271,6 +274,55 @@ function renderSelectOptions(selectEl, values, currentValue) {
   )).join("");
 }
 
+// Anders als Modell/Stimme (einmal pro Sitzung geladen, siehe oben):
+// Sprecher-Metadaten haengen von der GERADE gewaehlten Stimme ab und
+// werden bei jeder Aenderung an voiceIdInput frisch abgefragt (siehe
+// den change-Listener weiter unten). Bei einer Einsprecher-Stimme
+// (num_speakers <= 1, der Normalfall) bleibt das Feld einfach
+// versteckt - nichts zum Auswaehlen. currentSpeakerId erhaelt beim
+// Formular-Oeffnen den gespeicherten Wert der Persona; beim manuellen
+// Stimmenwechsel im Formular gibt es keinen "aktuellen" Wert mehr,
+// dann startet die Auswahl bei 0.
+async function refreshSpeakerOptions(currentSpeakerId) {
+  const voiceName = voiceIdInput.value;
+  if (!voiceName) {
+    voiceSpeakerIdField.hidden = true;
+    return;
+  }
+
+  let info;
+  try {
+    const res = await authedFetch(`/admin/voices/${encodeURIComponent(voiceName)}/speakers`);
+    info = await res.json();
+  } catch (err) {
+    info = { num_speakers: 1, speaker_id_map: {} };
+  }
+
+  if (!info.num_speakers || info.num_speakers <= 1) {
+    voiceSpeakerIdField.hidden = true;
+    voiceSpeakerIdInput.innerHTML = "";
+    return;
+  }
+
+  // speaker_id_map ordnet Name -> Index (Piper-Format) - fuer die
+  // Anzeige umgedreht, damit jede Option (falls vorhanden) einen
+  // sprechenden Namen zeigt statt nur einer nackten Zahl.
+  const idToName = {};
+  Object.entries(info.speaker_id_map || {}).forEach(([name, id]) => {
+    idToName[id] = name;
+  });
+  const selected = currentSpeakerId ?? 0;
+  const options = [];
+  for (let id = 0; id < info.num_speakers; id++) {
+    const label = idToName[id] !== undefined ? `${id} (${idToName[id]})` : String(id);
+    options.push(`<option value="${id}"${id === selected ? " selected" : ""}>${escapeHtml(label)}</option>`);
+  }
+  voiceSpeakerIdInput.innerHTML = options.join("");
+  voiceSpeakerIdField.hidden = false;
+}
+
+voiceIdInput.addEventListener("change", () => refreshSpeakerOptions(null));
+
 async function tryLogin(token) {
   try {
     const res = await fetch("/admin/personas", { headers: { Authorization: "Bearer " + token } });
@@ -404,7 +456,7 @@ function faceSelectHTML(field, value) {
 
 const DEFAULT_PERSONA = {
   model: "", first_name: "", last_name: "", title: "", gender: "neutral",
-  default_anrede: "sie", voice_id: "", system_prompt: "",
+  default_anrede: "sie", voice_id: "", voice_speaker_id: null, system_prompt: "",
   face_eyebrows: "neutral", face_eyes: "happy", face_mouth: "smile",
   face_hairstyle: "kurz", face_beard: "",
   always_loaded: true, max_tokens: 400, reengagement_tendency: 0.5,
@@ -413,7 +465,7 @@ const DEFAULT_PERSONA = {
   own_interests: "", family_relations: "",
 };
 
-function fillForm(persona, isCreate) {
+async function fillForm(persona, isCreate) {
   if (isCreate) {
     idInput.hidden = false;
     idInput.value = "";
@@ -440,6 +492,7 @@ function fillForm(persona, isCreate) {
   genderInput.value = persona.gender || "neutral";
   defaultAnredeInput.value = persona.default_anrede || "sie";
   renderSelectOptions(voiceIdInput, availableVoices, persona.voice_id);
+  await refreshSpeakerOptions(persona.voice_speaker_id ?? null);
   systemPromptInput.value = persona.system_prompt || "";
 
   longTermAgendaInput.value = persona.long_term_agenda || "";
@@ -452,22 +505,22 @@ function fillForm(persona, isCreate) {
   refreshFacePreview();
 }
 
-function openCreateForm() {
+async function openCreateForm() {
   editingId = null;
   formHeading.textContent = "Neue Persona anlegen";
   formError.hidden = true;
-  fillForm(DEFAULT_PERSONA, true);
+  await fillForm(DEFAULT_PERSONA, true);
   listView.hidden = true;
   formView.hidden = false;
 }
 
-function openEditForm(personaId) {
+async function openEditForm(personaId) {
   const persona = personas.find((p) => p.id === personaId);
   if (!persona) return;
   editingId = personaId;
   formHeading.textContent = `Bearbeiten: ${persona.display_name}`;
   formError.hidden = true;
-  fillForm(persona, false);
+  await fillForm(persona, false);
   listView.hidden = true;
   formView.hidden = false;
 }
@@ -514,6 +567,10 @@ function buildBody(isCreate) {
     gender: genderInput.value,
     default_anrede: defaultAnredeInput.value,
     voice_id: voiceIdInput.value,
+    // Nur gesetzt, wenn die Stimme ueberhaupt mehrere Sprecher hat und
+    // das Feld darum sichtbar ist (siehe refreshSpeakerOptions) - sonst
+    // null, Pipers eigener Standard.
+    voice_speaker_id: voiceSpeakerIdField.hidden ? null : Number(voiceSpeakerIdInput.value),
     system_prompt: systemPromptInput.value,
     always_loaded: alwaysLoadedInput.checked,
     max_tokens: Number(maxTokensInput.value),

@@ -36,6 +36,21 @@ async def synthesize(text: str, voice: str, speaker_id: int | None = None) -> by
         return resp.content
 
 
+async def voice_speakers(voice_name: str) -> dict:
+    """Sprecher-Metadaten (num_speakers/speaker_id_map) einer Stimme -
+    fuer das Sprecher-Dropdown im Persona-Designer (main.py's GET
+    /admin/voices/{voice_name}/speakers). Ein Ergebnis mit nur EINEM
+    Sprecher (kein Fehlerfall im UI-Sinn) bei Nichterreichbarkeit/
+    unbekannter Stimme, gleiches Fail-still-Prinzip wie list_voices()."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            resp = await client.get(f"{SPEECH_SERVICE_URL}/voices/{voice_name}/speakers")
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError:
+            return {"num_speakers": 1, "speaker_id_map": {}}
+
+
 async def list_voices() -> list[str]:
     """Tatsaechlich vorhandene Piper-Stimmen - fuer das Stimmen-Dropdown
     im Persona-Designer (main.py's GET /admin/voices). Bei Sprachdienst
