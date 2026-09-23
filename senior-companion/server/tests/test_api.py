@@ -31,6 +31,18 @@ def test_list_personas_returns_all_four():
     assert ids == {"freundin", "reporter", "professor", "technikerin"}
 
 
+def test_list_personas_includes_address_name_without_title():
+    """address_name ist eigens fuer die Ansprache-/Uebergabe-Erkennung
+    da (room.detect_addressed_persona(), handoff.detect_handoff_target())
+    - ohne Titel, damit "Wallner, ..." erkannt wird, nicht nur
+    "Professor Wallner, ..."."""
+    with TestClient(main.app) as client:
+        r = client.get("/api/personas")
+    by_id = {p["id"]: p for p in r.json()}
+    assert by_id["professor"]["display_name"] == "Professor Wallner"
+    assert by_id["professor"]["address_name"] == "Wallner"
+
+
 def test_version_endpoint_reports_a_commit_string():
     """Damit sich nach einem Deploy (git pull + Neustart) von aussen
     ueberpruefen laesst, ob der laufende Prozess tatsaechlich den neuen

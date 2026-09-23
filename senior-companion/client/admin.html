@@ -50,9 +50,11 @@
       </label>
       <label>
         Modell
-        <input type="text" id="modelInput" list="modelSuggestions" required>
+        <span class="admin-select-with-link">
+          <select id="modelInput" required></select>
+          <a href="https://ollama.com/library" target="_blank" rel="noopener" class="admin-external-link">weitere Modelle suchen ↗</a>
+        </span>
       </label>
-      <datalist id="modelSuggestions"></datalist>
       <label class="admin-checkbox-label">
         <input type="checkbox" id="alwaysLoadedInput">
         Immer geladen
@@ -80,8 +82,65 @@
         <div id="colorPreview" class="avatar-shape-bg admin-color-preview"></div>
       </div>
 
-      <div id="variantsContainer"></div>
-      <datalist id="voiceSuggestions"></datalist>
+      <label>
+        Vorname
+        <input type="text" id="firstNameInput" required>
+      </label>
+      <label>
+        Nachname
+        <input type="text" id="lastNameInput">
+      </label>
+      <label>
+        Titel
+        <input type="text" id="titleInput" placeholder="z.B. Professor">
+      </label>
+      <label>
+        Geschlecht
+        <select id="genderInput">
+          <option value="neutral">Neutral</option>
+          <option value="weiblich">Weiblich</option>
+          <option value="maennlich">Männlich</option>
+        </select>
+      </label>
+      <label>
+        Anrede-Voreinstellung
+        <select id="defaultAnredeInput">
+          <option value="sie">Sie</option>
+          <option value="du">Du</option>
+        </select>
+      </label>
+      <label>
+        Stimme
+        <span class="admin-select-with-link">
+          <select id="voiceIdInput" required></select>
+          <a href="https://huggingface.co/rhasspy/piper-voices" target="_blank" rel="noopener" class="admin-external-link">weitere Stimmen suchen ↗</a>
+        </span>
+      </label>
+      <label>
+        Masterprompt
+        <textarea id="systemPromptInput" rows="8" required></textarea>
+      </label>
+      <span class="avatar-shape-bg admin-color-preview" id="facePreview"></span>
+      <div id="faceFieldsContainer"></div>
+
+      <details class="admin-narrative-fields">
+        <summary>Weitere Felder (noch ohne Wirkung im Gespräch)</summary>
+        <label>Langzeitagenda
+          <textarea id="longTermAgendaInput" rows="3"></textarea>
+        </label>
+        <label>Tagesagenda
+          <textarea id="dailyAgendaInput" rows="3"></textarea>
+        </label>
+        <label>Eigene Geschichte
+          <textarea id="ownBackstoryInput" rows="3"></textarea>
+        </label>
+        <label>Eigene Interessen
+          <textarea id="ownInterestsInput" rows="3"></textarea>
+        </label>
+        <label>Verwandtschaft (Eltern, Geschwister, ...)
+          <textarea id="familyRelationsInput" rows="3"></textarea>
+        </label>
+      </details>
 
       <div class="admin-form-actions">
         <button type="submit" class="admin-btn admin-btn-primary">Speichern</button>

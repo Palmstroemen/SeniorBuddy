@@ -27,62 +27,38 @@ def test_admin_routes_require_auth():
     assert r.status_code == 401
 
 
-def test_get_persona_gender():
+def test_list_admin_models_requires_auth():
     with TestClient(main.app) as client:
-        r = client.get("/admin/config/persona-gender", headers=ADMIN_HEADERS)
+        r = client.get("/admin/models")
+    assert r.status_code == 401
+
+
+def test_list_admin_models_returns_ollama_tags(monkeypatch):
+    async def fake_list_available_models():
+        return ["qwen2.5:7b-instruct", "qwen2.5:32b-instruct"]
+
+    monkeypatch.setattr(main.llm_client, "list_available_models", fake_list_available_models)
+    with TestClient(main.app) as client:
+        r = client.get("/admin/models", headers=ADMIN_HEADERS)
     assert r.status_code == 200
-    assert r.json()["freundin"] == "neutral"
+    assert r.json() == ["qwen2.5:7b-instruct", "qwen2.5:32b-instruct"]
 
 
-def test_set_persona_gender_takes_effect_immediately():
+def test_list_admin_voices_requires_auth():
     with TestClient(main.app) as client:
-        r = client.post(
-            "/admin/config/persona-gender/freundin",
-            json={"gender": "weiblich"},
-            headers=ADMIN_HEADERS,
-        )
+        r = client.get("/admin/voices")
+    assert r.status_code == 401
+
+
+def test_list_admin_voices_returns_speech_service_voices(monkeypatch):
+    async def fake_list_voices():
+        return ["de_DE-thorsten-low", "de_DE-kerstin-low"]
+
+    monkeypatch.setattr(main.speech_client, "list_voices", fake_list_voices)
+    with TestClient(main.app) as client:
+        r = client.get("/admin/voices", headers=ADMIN_HEADERS)
     assert r.status_code == 200
-    assert main.PERSONAS["freundin"].display_name == "Robin (die Freundin)"
-    main.PERSONA_GENDER["freundin"] = "neutral"  # aufraeumen fuer andere Tests
-
-
-def test_set_persona_gender_rejects_unknown_persona():
-    with TestClient(main.app) as client:
-        r = client.post(
-            "/admin/config/persona-gender/does_not_exist",
-            json={"gender": "weiblich"},
-            headers=ADMIN_HEADERS,
-        )
-    assert r.status_code == 404
-
-
-def test_set_persona_gender_rejects_invalid_value():
-    with TestClient(main.app) as client:
-        r = client.post(
-            "/admin/config/persona-gender/freundin",
-            json={"gender": "quatsch"},
-            headers=ADMIN_HEADERS,
-        )
-    assert r.status_code == 400
-
-
-def test_set_persona_gender_survives_simulated_restart():
-    with TestClient(main.app) as client:
-        r = client.post(
-            "/admin/config/persona-gender/freundin",
-            json={"gender": "maennlich"},
-            headers=ADMIN_HEADERS,
-        )
-    assert r.status_code == 200
-
-    # Simulierter Neustart: PERSONA_GENDER manuell auf den Default
-    # zuruecksetzen (so wie es beim Neuimport von config.py waere),
-    # dann die Start-Logik erneut aufrufen - kein echter Prozess-
-    # Neustart noetig, um die Persistenz zu beweisen.
-    main.PERSONA_GENDER["freundin"] = "neutral"
-    main._apply_persisted_admin_settings()
-    assert main.PERSONA_GENDER["freundin"] == "maennlich"
-    main.PERSONA_GENDER["freundin"] = "neutral"  # aufraeumen
+    assert r.json() == ["de_DE-thorsten-low", "de_DE-kerstin-low"]
 
 
 def test_set_ntfy_topic_updates_module_and_persists():

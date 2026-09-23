@@ -47,6 +47,12 @@ def test_synthesize_unknown_voice_returns_404():
     assert r.status_code == 404
 
 
+def test_list_voices_includes_real_installed_voice():
+    r = client.get("/voices")
+    assert r.status_code == 200
+    assert "de_DE-thorsten-low" in r.json()
+
+
 def test_transcribe_roundtrip_with_real_synthesized_speech():
     synth = client.post(
         "/synthesize",

@@ -31,3 +31,17 @@ async def synthesize(text: str, voice: str) -> bytes:
         )
         resp.raise_for_status()
         return resp.content
+
+
+async def list_voices() -> list[str]:
+    """Tatsaechlich vorhandene Piper-Stimmen - fuer das Stimmen-Dropdown
+    im Persona-Designer (main.py's GET /admin/voices). Bei Sprachdienst
+    nicht erreichbar leere Liste statt Exception, gleiches Prinzip wie
+    llm_client.list_available_models()."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            resp = await client.get(f"{SPEECH_SERVICE_URL}/voices")
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError:
+            return []

@@ -43,7 +43,7 @@ import secrecy
 import security
 import speech_client
 import speech_timing
-from config import PERSONAS, PERSONA_GENDER, FALLBACK_PERSONA, KNOWLEDGE_PERSONAS
+from config import PERSONAS, FALLBACK_PERSONA, KNOWLEDGE_PERSONAS
 from plugins.dispatch import find_triggered_plugin, run_plugin, plugin_failure_count
 from plugins.loader import discover_plugins
 import scheduler as scheduler_module
@@ -87,8 +87,6 @@ def _apply_persisted_admin_settings():
     /admin/config/* geaenderte Einstellung nach einem Neustart wieder
     weg."""
     settings = admin_settings.load()
-    if "persona_gender" in settings:
-        PERSONA_GENDER.update(settings["persona_gender"])
     if "ntfy_topic" in settings:
         honeypot.NTFY_TOPIC = settings["ntfy_topic"]
     if "satisfaction_interval_days" in settings:
@@ -135,7 +133,8 @@ def get_version():
 def list_personas():
     return [
         {
-            "id": p.id, "display_name": p.display_name, "voice_id": p.voice_id,
+            "id": p.id, "display_name": p.display_name, "address_name": p.address_name,
+            "voice_id": p.voice_id,
             "color": p.color, "background_color": p.background_color,
             "face_eyebrows": p.face_eyebrows, "face_eyes": p.face_eyes,
             "face_mouth": p.face_mouth, "face_hairstyle": p.face_hairstyle,
@@ -285,9 +284,9 @@ async def get_reaction(persona_id: str, situation: str, user_id: str | None = No
     persona = PERSONAS.get(persona_id)
     if persona is None:
         raise HTTPException(404, "Persona nicht gefunden")
-    anrede = "sie"
+    anrede = persona.default_anrede
     if user_id:
-        anrede = memory.get_fact(user_id, f"anrede:{persona_id}") or "sie"
+        anrede = memory.get_fact(user_id, f"anrede:{persona_id}") or persona.default_anrede
     audio_bytes = await reaction_audio.get_reaction_audio(persona, situation, anrede)
     if audio_bytes is None:
         raise HTTPException(404, f"Keine Reaktionssaetze fuer Situation '{situation}'")
@@ -380,7 +379,7 @@ def prepare_handoff(
     die Uebergabe-Bitte selbst (unvertraulich) immer als "etwas zum
     Zusammenfassen" zaehlen, selbst wenn ALLES Vorherige vertraulich
     war."""
-    candidates = {pid: p.display_name for pid, p in PERSONAS.items()}
+    candidates = {pid: p.address_name for pid, p in PERSONAS.items()}
     target_id = handoff.detect_handoff_target(user_text, candidates, persona_id)
     if target_id is None:
         return HandoffOutcome()
@@ -535,18 +534,20 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
                             match.title, context_check["rule"],
                         )
 
-            # Anrede (Du/Sie): ein ausdrueckliches Angebot schaltet
-            # sofort um (siehe analysis.py), sonst bleibt "sie" der
-            # Default. Wirkt fuer jede Persona, nicht nur Technikerin -
-            # siehe config.py fuer den statischen Sie-Standard im
-            # system_prompt, der das hier ueberschreibt.
+            # Anrede (Du/Sie): ein ausdrueckliches Angebot schaltet sofort
+            # um (siehe analysis.py) und bleibt danach als expliziter
+            # memory-Fakt gespeichert - ein einfacher, robuster
+            # Property-Lesezugriff (kein Durchsuchen der ggf. irgendwann
+            # komprimierten Historie noetig). Ohne Fakt gilt
+            # persona.default_anrede als Ausgangswert (Charaktereigenschaft,
+            # siehe config.py).
             anrede_key = f"anrede:{persona.id}"
             if (
                 analysis.detect_du_offer(user_text)
                 and memory.get_fact(user_id, anrede_key) != "du"
             ):
                 memory.add_fact(user_id, anrede_key, "du", source_persona=persona.id)
-            anrede = memory.get_fact(user_id, anrede_key) or "sie"
+            anrede = memory.get_fact(user_id, anrede_key) or persona.default_anrede
             chat_messages.append({
                 "role": "system",
                 "content": (
@@ -672,7 +673,7 @@ async def run_turn(
         and memory.get_fact(user_id, anrede_key) != "du"
     ):
         memory.add_fact(user_id, anrede_key, "du", source_persona=persona.id)
-    anrede = memory.get_fact(user_id, anrede_key) or "sie"
+    anrede = memory.get_fact(user_id, anrede_key) or persona.default_anrede
     chat_messages.append({
         "role": "system",
         "content": (
@@ -983,7 +984,7 @@ async def room_chat(websocket: WebSocket, user_id: str):
             wrapup_sent = False
             lookahead.discard_chain(user_id, reason="interrupted")
 
-            candidates_map = {pid: p.display_name for pid, p in PERSONAS.items()}
+            candidates_map = {pid: p.address_name for pid, p in PERSONAS.items()}
             addressed = room.detect_addressed_persona(user_text, candidates_map)
             if addressed is not None:
                 room.touch(user_id, addressed)
@@ -1132,29 +1133,6 @@ async def _honeypot_route(request: Request):
 # aber keinen neuen Endpoint - /api/plugins/{id}/toggle ist schon da.
 # ---------------------------------------------------------------------
 
-class PersonaGenderUpdate(BaseModel):
-    gender: str
-
-
-@app.get("/admin/config/persona-gender", dependencies=[Depends(admin_auth.require_admin)])
-def get_persona_gender():
-    return PERSONA_GENDER
-
-
-@app.post(
-    "/admin/config/persona-gender/{persona_id}",
-    dependencies=[Depends(admin_auth.require_admin)],
-)
-def set_persona_gender(persona_id: str, body: PersonaGenderUpdate):
-    if persona_id not in PERSONAS:
-        raise HTTPException(404, "Persona nicht gefunden")
-    if body.gender not in {"neutral", "weiblich", "maennlich"}:
-        raise HTTPException(400, "Ungueltiges Geschlecht")
-    PERSONA_GENDER[persona_id] = body.gender  # sofort wirksam - PERSONAS liest denselben dict
-    admin_settings.update("persona_gender", PERSONA_GENDER)
-    return {"persona_id": persona_id, "gender": body.gender}
-
-
 # --- Persona-Designer: Personas per JSON-API anlegen/bearbeiten/loeschen,
 # ohne Code anzufassen. Reine JSON-API wie jede andere Fernwartungs-
 # Funktion - keine eigene Weboberflaeche in dieser Runde.
@@ -1170,29 +1148,20 @@ _FACE_OPTIONS = {
 }
 
 
-class PersonaVariantIn(BaseModel):
-    display_name: str
-    system_prompt: str
+class PersonaFieldsIn(BaseModel):
+    model: str
+    first_name: str
+    last_name: str = ""
+    title: str = ""
+    gender: str = "neutral"
+    default_anrede: str = "sie"
     voice_id: str = ""
+    system_prompt: str
     face_eyebrows: str = "neutral"
     face_eyes: str = "happy"
     face_mouth: str = "smile"
     face_hairstyle: str = "kurz"
     face_beard: str = ""
-
-    @field_validator(
-        "face_eyebrows", "face_eyes", "face_mouth", "face_hairstyle", "face_beard",
-    )
-    @classmethod
-    def _known_face_option(cls, v: str, info: ValidationInfo) -> str:
-        allowed = _FACE_OPTIONS[info.field_name]
-        if v not in allowed:
-            raise ValueError(f"{info.field_name} muss einer von {sorted(allowed)} sein")
-        return v
-
-
-class PersonaFieldsIn(BaseModel):
-    model: str
     always_loaded: bool = True
     max_tokens: int = Field(400, gt=0, le=4096)
     reengagement_tendency: float = Field(0.5, ge=0.0, le=1.0)
@@ -1204,13 +1173,38 @@ class PersonaFieldsIn(BaseModel):
     # PersonaConfig.from_dict() fuellt jeden fehlenden Schluessel mit
     # dem Dataclass-Default auf.
     reaction_phrases: dict[str, list[str]] = {}
-    variants: dict[str, PersonaVariantIn]
+    # Neu, bewusst noch unwirksam (siehe config.py's PersonaConfig-Docstring) -
+    # trotzdem schon hier annehmbar/persistierbar, damit der Persona-
+    # Designer sie schon zeigen/speichern kann, bevor ihr Prompt-Einbau
+    # entschieden ist.
+    long_term_agenda: str = ""
+    daily_agenda: str = ""
+    own_backstory: str = ""
+    own_interests: str = ""
+    family_relations: str = ""
 
-    @field_validator("variants")
+    @field_validator(
+        "face_eyebrows", "face_eyes", "face_mouth", "face_hairstyle", "face_beard",
+    )
     @classmethod
-    def _all_three_genders(cls, v):
-        if set(v.keys()) != {"neutral", "weiblich", "maennlich"}:
-            raise ValueError("variants muss genau neutral/weiblich/maennlich enthalten")
+    def _known_face_option(cls, v: str, info: ValidationInfo) -> str:
+        allowed = _FACE_OPTIONS[info.field_name]
+        if v not in allowed:
+            raise ValueError(f"{info.field_name} muss einer von {sorted(allowed)} sein")
+        return v
+
+    @field_validator("gender")
+    @classmethod
+    def _known_gender(cls, v: str) -> str:
+        if v not in {"neutral", "weiblich", "maennlich"}:
+            raise ValueError("gender muss neutral, weiblich oder maennlich sein")
+        return v
+
+    @field_validator("default_anrede")
+    @classmethod
+    def _known_anrede(cls, v: str) -> str:
+        if v not in {"sie", "du"}:
+            raise ValueError("default_anrede muss sie oder du sein")
         return v
 
     @field_validator("color", "background_color")
@@ -1233,11 +1227,18 @@ class PersonaCreateIn(PersonaFieldsIn):
 
 
 def _persona_out(persona: "config.PersonaConfig") -> dict:
-    # is_builtin NUR hier berechnet, NICHT in PersonaConfig.to_dict()
-    # selbst - _persist_all_personas() nutzt weiterhin to_dict() direkt,
-    # dessen Roundtrip mit from_dict() (Konstruktor-Kwargs) sich sonst
-    # an einem unerwarteten is_builtin-Schluessel verschlucken wuerde.
-    return {**persona.to_dict(), "is_builtin": persona.id in config._BUILTIN_PERSONAS}
+    # is_builtin und display_name NUR hier berechnet, NICHT in
+    # PersonaConfig.to_dict() selbst - _persist_all_personas() nutzt
+    # weiterhin to_dict() direkt, dessen Roundtrip mit from_dict()
+    # (Konstruktor-Kwargs) sich sonst an einem unerwarteten
+    # is_builtin-Schluessel verschlucken wuerde; display_name ist zudem
+    # eine berechnete Property, kein Konstruktor-Feld (siehe
+    # PersonaConfig.from_dict()'s Filterung).
+    return {
+        **persona.to_dict(),
+        "display_name": persona.display_name,
+        "is_builtin": persona.id in config._BUILTIN_PERSONAS,
+    }
 
 
 async def _model_availability_warnings(model: str) -> list[str]:
@@ -1247,6 +1248,22 @@ async def _model_availability_warnings(model: str) -> list[str]:
             f"Ollama vorhanden - 'ollama pull {model}' ausfuehren."
         ]
     return []
+
+
+@app.get("/admin/models", dependencies=[Depends(admin_auth.require_admin)])
+async def list_admin_models():
+    """Tatsaechlich in Ollama gepullte Modelle - fuer das Modell-Dropdown
+    im Persona-Designer (siehe admin.js), nicht nur aus bestehenden
+    Personas abgeschriebene Vorschlaege."""
+    return await llm_client.list_available_models()
+
+
+@app.get("/admin/voices", dependencies=[Depends(admin_auth.require_admin)])
+async def list_admin_voices():
+    """Tatsaechlich vorhandene Piper-Stimmen (ueber den Sprachdienst,
+    siehe speech_client.list_voices()) - fuer das Stimmen-Dropdown im
+    Persona-Designer."""
+    return await speech_client.list_voices()
 
 
 def _persist_all_personas():

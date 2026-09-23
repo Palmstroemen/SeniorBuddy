@@ -47,13 +47,21 @@ async def generate(model: str, system_prompt: str, messages: list[dict],
     return "".join(parts)
 
 
-async def is_model_available(model: str) -> bool:
-    """Prueft, ob ein Modell aktuell in Ollama geladen/gepullt ist -
-    relevant fuer die 'Professor schlaeft gerade'-Logik."""
+async def list_available_models() -> list[str]:
+    """Tatsaechlich in Ollama gepullte Modellnamen - fuer das Modell-
+    Dropdown im Persona-Designer (main.py's GET /admin/models). Bei
+    Ollama nicht erreichbar leere Liste statt Exception, wie
+    is_model_available() unten es schon fuer den Einzel-Check macht."""
     async with httpx.AsyncClient(timeout=5.0) as client:
         try:
             resp = await client.get(f"{OLLAMA_URL}/api/tags")
-            tags = [m["name"] for m in resp.json().get("models", [])]
-            return any(model in t for t in tags)
+            return [m["name"] for m in resp.json().get("models", [])]
         except httpx.HTTPError:
-            return False
+            return []
+
+
+async def is_model_available(model: str) -> bool:
+    """Prueft, ob ein Modell aktuell in Ollama geladen/gepullt ist -
+    relevant fuer die 'Professor schlaeft gerade'-Logik."""
+    tags = await list_available_models()
+    return any(model in t for t in tags)

@@ -3,14 +3,16 @@
 // einziges Top-Level-Script wie app.js, kein <script type="module">.
 
 const TOKEN_KEY = "senior_companion_admin_token";
-const GENDER_KEYS = ["neutral", "weiblich", "maennlich"];
-const GENDER_LABELS = { neutral: "Neutral", weiblich: "Weiblich", maennlich: "Männlich" };
 const FIELD_LABELS = {
   id: "ID", model: "Modell", always_loaded: "Immer geladen", max_tokens: "Max. Tokens",
   reengagement_tendency: "Neigung", color: "Farbe", background_color: "Hintergrundfarbe",
-  variants: "Geschlechts-Varianten", display_name: "Anzeigename", system_prompt: "Systemprompt",
+  first_name: "Vorname", last_name: "Nachname", title: "Titel", gender: "Geschlecht",
+  default_anrede: "Anrede-Voreinstellung", system_prompt: "Masterprompt",
   voice_id: "Stimme (voice_id)", face_eyebrows: "Augenbrauen", face_eyes: "Augen",
   face_mouth: "Mund", face_hairstyle: "Frisur", face_beard: "Bart",
+  long_term_agenda: "Langzeitagenda", daily_agenda: "Tagesagenda",
+  own_backstory: "Eigene Geschichte", own_interests: "Eigene Interessen",
+  family_relations: "Verwandtschaft",
 };
 
 // Deutsche Beschriftungen fuer die Gesichts-Dropdowns - reine
@@ -56,7 +58,6 @@ const personaForm = document.getElementById("personaForm");
 const idInput = document.getElementById("idInput");
 const idReadonly = document.getElementById("idReadonly");
 const modelInput = document.getElementById("modelInput");
-const modelSuggestions = document.getElementById("modelSuggestions");
 const alwaysLoadedInput = document.getElementById("alwaysLoadedInput");
 const maxTokensInput = document.getElementById("maxTokensInput");
 const reengagementInput = document.getElementById("reengagementInput");
@@ -64,9 +65,28 @@ const reengagementOutput = document.getElementById("reengagementOutput");
 const colorInput = document.getElementById("colorInput");
 const backgroundColorInput = document.getElementById("backgroundColorInput");
 const colorPreview = document.getElementById("colorPreview");
-const variantsContainer = document.getElementById("variantsContainer");
-const voiceSuggestions = document.getElementById("voiceSuggestions");
+const firstNameInput = document.getElementById("firstNameInput");
+const lastNameInput = document.getElementById("lastNameInput");
+const titleInput = document.getElementById("titleInput");
+const genderInput = document.getElementById("genderInput");
+const defaultAnredeInput = document.getElementById("defaultAnredeInput");
+const voiceIdInput = document.getElementById("voiceIdInput");
+const systemPromptInput = document.getElementById("systemPromptInput");
+const facePreview = document.getElementById("facePreview");
+const faceFieldsContainer = document.getElementById("faceFieldsContainer");
+const longTermAgendaInput = document.getElementById("longTermAgendaInput");
+const dailyAgendaInput = document.getElementById("dailyAgendaInput");
+const ownBackstoryInput = document.getElementById("ownBackstoryInput");
+const ownInterestsInput = document.getElementById("ownInterestsInput");
+const familyRelationsInput = document.getElementById("familyRelationsInput");
 const cancelFormBtn = document.getElementById("cancelFormBtn");
+
+// Tatsaechlich verfuegbare Modelle/Stimmen (siehe loadModelOptions()/
+// loadVoiceOptions() unten) - einmal nach erfolgreichem Login geladen,
+// im Speicher gehalten, bei jedem fillForm()-Aufruf in die beiden
+// <select>s gerendert.
+let availableModels = [];
+let availableVoices = [];
 
 // --- Avatare: bewusst dupliziert aus client/js/app.js (kein
 // Modul-System vorhanden) - bei Aenderungen an der Avatar-Form beide
@@ -209,11 +229,46 @@ function showLoginView(message) {
   }
 }
 
-function showAppView() {
+async function showAppView() {
   loginView.hidden = true;
   appView.hidden = false;
   logoutBtn.hidden = false;
+  // Tatsaechlich verfuegbare Modelle/Stimmen erst NACH erfolgreichem
+  // Login laden (beide Endpunkte sind admin-auth-geschuetzt) - einmal
+  // pro Sitzung, nicht bei jedem Formular-Oeffnen.
+  await Promise.all([loadModelOptions(), loadVoiceOptions()]);
   showListView();
+}
+
+async function loadModelOptions() {
+  try {
+    const res = await authedFetch("/admin/models");
+    availableModels = await res.json();
+  } catch (err) {
+    availableModels = [];
+  }
+}
+
+async function loadVoiceOptions() {
+  try {
+    const res = await authedFetch("/admin/voices");
+    availableVoices = await res.json();
+  } catch (err) {
+    availableVoices = [];
+  }
+}
+
+// Rendert eine <select> mit allen bekannten Werten - ergaenzt den
+// AKTUELLEN Wert der Persona, falls er (noch) nicht in der Liste
+// tatsaechlich verfuegbarer Modelle/Stimmen auftaucht (z.B. ein Modell,
+// das gerade nicht gepullt ist) - sonst wuerde eine bestehende Persona
+// beim Bearbeiten den konfigurierten Wert stillschweigend verlieren.
+function renderSelectOptions(selectEl, values, currentValue) {
+  const optionValues = new Set(values);
+  if (currentValue) optionValues.add(currentValue);
+  selectEl.innerHTML = [...optionValues].sort().map((v) => (
+    `<option value="${escapeHtml(v)}"${v === currentValue ? " selected" : ""}>${escapeHtml(v)}</option>`
+  )).join("");
 }
 
 async function tryLogin(token) {
@@ -222,7 +277,7 @@ async function tryLogin(token) {
     if (res.status === 200) {
       localStorage.setItem(TOKEN_KEY, token);
       personas = await res.json();
-      showAppView();
+      await showAppView();
       renderCards();
       return true;
     }
@@ -282,13 +337,13 @@ function renderCards() {
 
     const avatarWrap = document.createElement("span");
     avatarWrap.className = "avatar-shape-bg admin-card-avatar";
-    avatarWrap.innerHTML = avatarSvg(p.id, FACE_DATA, { ...p.variants.neutral, color: p.color, background: p.background_color });
+    avatarWrap.innerHTML = avatarSvg(p.id, FACE_DATA, { ...p, color: p.color, background: p.background_color });
     applyPersonaColorAdmin(avatarWrap, p.color, p.background_color);
     card.appendChild(avatarWrap);
 
     const info = document.createElement("div");
     info.className = "admin-card-info";
-    const name = escapeHtml(p.variants.neutral.display_name);
+    const name = escapeHtml(p.display_name);
     const badge = p.is_builtin ? "mitgeliefert" : "eigene";
     info.innerHTML = `
       <div class="admin-card-name">${name} <span class="admin-badge">${badge}</span></div>
@@ -317,7 +372,7 @@ function renderCards() {
 }
 
 async function deleteOrRevert(p) {
-  const name = p.variants.neutral.display_name;
+  const name = p.display_name;
   const message = p.is_builtin
     ? `"${name}" auf die mitgelieferten Standard-Werte zurücksetzen?`
     : `"${name}" endgültig löschen? Das kann nicht rückgängig gemacht werden.`;
@@ -347,52 +402,18 @@ function faceSelectHTML(field, value) {
   </label>`;
 }
 
-function variantFieldsetHTML(genderKey, variant) {
-  return `
-    <fieldset class="variant-fieldset" data-gender="${genderKey}">
-      <legend>${GENDER_LABELS[genderKey]}</legend>
-      <label>Anzeigename
-        <input type="text" name="display_name" required value="${escapeHtml(variant.display_name)}">
-      </label>
-      <label>Systemprompt
-        <textarea name="system_prompt" rows="6" required>${escapeHtml(variant.system_prompt)}</textarea>
-      </label>
-      <label>Stimme (voice_id)
-        <input type="text" name="voice_id" list="voiceSuggestions" value="${escapeHtml(variant.voice_id)}">
-      </label>
-      <span class="avatar-shape-bg variant-face-preview"></span>
-      ${FACE_FIELDS.map((f) => faceSelectHTML(f, variant[f])).join("")}
-    </fieldset>`;
-}
-
-const EMPTY_VARIANT = {
-  display_name: "", system_prompt: "", voice_id: "",
+const DEFAULT_PERSONA = {
+  model: "", first_name: "", last_name: "", title: "", gender: "neutral",
+  default_anrede: "sie", voice_id: "", system_prompt: "",
   face_eyebrows: "neutral", face_eyes: "happy", face_mouth: "smile",
   face_hairstyle: "kurz", face_beard: "",
-};
-const DEFAULT_PERSONA = {
-  model: "", always_loaded: true, max_tokens: 400, reengagement_tendency: 0.5,
+  always_loaded: true, max_tokens: 400, reengagement_tendency: 0.5,
   color: "#4A5D52", background_color: "#E9EEEA",
-  variants: { neutral: EMPTY_VARIANT, weiblich: EMPTY_VARIANT, maennlich: EMPTY_VARIANT },
+  long_term_agenda: "", daily_agenda: "", own_backstory: "",
+  own_interests: "", family_relations: "",
 };
-
-function populateSuggestions() {
-  const models = new Set();
-  const voices = new Set();
-  personas.forEach((p) => {
-    if (p.model) models.add(p.model);
-    GENDER_KEYS.forEach((g) => {
-      const v = p.variants[g];
-      if (v && v.voice_id) voices.add(v.voice_id);
-    });
-  });
-  modelSuggestions.innerHTML = [...models].map((m) => `<option value="${escapeHtml(m)}">`).join("");
-  voiceSuggestions.innerHTML = [...voices].map((v) => `<option value="${escapeHtml(v)}">`).join("");
-}
 
 function fillForm(persona, isCreate) {
-  populateSuggestions();
-
   if (isCreate) {
     idInput.hidden = false;
     idInput.value = "";
@@ -405,20 +426,30 @@ function fillForm(persona, isCreate) {
     idReadonly.textContent = persona.id;
   }
 
-  modelInput.value = persona.model;
+  renderSelectOptions(modelInput, availableModels, persona.model);
   alwaysLoadedInput.checked = persona.always_loaded;
   maxTokensInput.value = persona.max_tokens;
   reengagementInput.value = persona.reengagement_tendency;
   reengagementOutput.textContent = Number(persona.reengagement_tendency).toFixed(2);
   colorInput.value = persona.color;
   backgroundColorInput.value = persona.background_color;
-  applyPersonaColorAdmin(colorPreview, persona.color, persona.background_color);
-  colorPreview.innerHTML = avatarSvg("preview", FACE_DATA, { ...persona.variants.neutral, color: persona.color, background: persona.background_color });
 
-  variantsContainer.innerHTML = GENDER_KEYS
-    .map((g) => variantFieldsetHTML(g, persona.variants[g] || EMPTY_VARIANT))
-    .join("");
-  refreshVariantPreviews();
+  firstNameInput.value = persona.first_name || "";
+  lastNameInput.value = persona.last_name || "";
+  titleInput.value = persona.title || "";
+  genderInput.value = persona.gender || "neutral";
+  defaultAnredeInput.value = persona.default_anrede || "sie";
+  renderSelectOptions(voiceIdInput, availableVoices, persona.voice_id);
+  systemPromptInput.value = persona.system_prompt || "";
+
+  longTermAgendaInput.value = persona.long_term_agenda || "";
+  dailyAgendaInput.value = persona.daily_agenda || "";
+  ownBackstoryInput.value = persona.own_backstory || "";
+  ownInterestsInput.value = persona.own_interests || "";
+  familyRelationsInput.value = persona.family_relations || "";
+
+  faceFieldsContainer.innerHTML = FACE_FIELDS.map((f) => faceSelectHTML(f, persona[f])).join("");
+  refreshFacePreview();
 }
 
 function openCreateForm() {
@@ -434,7 +465,7 @@ function openEditForm(personaId) {
   const persona = personas.find((p) => p.id === personaId);
   if (!persona) return;
   editingId = personaId;
-  formHeading.textContent = `Bearbeiten: ${persona.variants.neutral.display_name}`;
+  formHeading.textContent = `Bearbeiten: ${persona.display_name}`;
   formError.hidden = true;
   fillForm(persona, false);
   listView.hidden = true;
@@ -448,64 +479,56 @@ reengagementInput.addEventListener("input", () => {
 [colorInput, backgroundColorInput].forEach((el) => {
   el.addEventListener("input", () => {
     applyPersonaColorAdmin(colorPreview, colorInput.value, backgroundColorInput.value);
-    refreshVariantPreviews();
+    refreshFacePreview();
   });
 });
 
-// Liest die 5 Gesichts-Dropdowns eines Fieldsets + die aktuell im
-// Formular gesetzte Farbe (color-Feld ist persona-weit, nicht pro
-// Geschlechts-Variante) - fuer die Live-Vorschau.
-function readVariantFace(fieldset) {
+// Liest die 5 Gesichts-Dropdowns + die aktuell im Formular gesetzte
+// Farbe - fuer die Live-Vorschau.
+function readFace() {
   const face = { color: colorInput.value, background: backgroundColorInput.value };
   FACE_FIELDS.forEach((f) => {
-    face[f] = fieldset.querySelector(`[name="${f}"]`).value;
+    face[f] = document.querySelector(`[name="${f}"]`).value;
   });
   return face;
 }
 
-function refreshVariantPreviews() {
-  variantsContainer.querySelectorAll(".variant-fieldset").forEach((fs) => {
-    const preview = fs.querySelector(".variant-face-preview");
-    if (!preview) return;
-    preview.style.background = backgroundColorInput.value;
-    preview.innerHTML = avatarSvg("preview", FACE_DATA, readVariantFace(fs));
-  });
+function refreshFacePreview() {
+  applyPersonaColorAdmin(facePreview, colorInput.value, backgroundColorInput.value);
+  facePreview.innerHTML = avatarSvg("preview", FACE_DATA, readFace());
 }
 
-// Delegierter Listener statt 5 Listener pro Fieldset x 3 Geschlechter -
-// variantsContainer.innerHTML wird bei jedem fillForm() komplett neu
-// aufgebaut, direkte Listener wuerden dabei ohnehin verloren gehen.
-variantsContainer.addEventListener("change", (e) => {
-  if (FACE_FIELDS.includes(e.target.name)) refreshVariantPreviews();
+// Delegierter Listener statt 5 Einzel-Listener - faceFieldsContainer.innerHTML
+// wird bei jedem fillForm()-Aufruf komplett neu aufgebaut, direkte
+// Listener wuerden dabei ohnehin verloren gehen.
+faceFieldsContainer.addEventListener("change", (e) => {
+  if (FACE_FIELDS.includes(e.target.name)) refreshFacePreview();
 });
-
-function collectVariants() {
-  const variants = {};
-  variantsContainer.querySelectorAll(".variant-fieldset").forEach((fs) => {
-    const gender = fs.dataset.gender;
-    const variant = {
-      display_name: fs.querySelector('[name="display_name"]').value,
-      system_prompt: fs.querySelector('[name="system_prompt"]').value,
-      voice_id: fs.querySelector('[name="voice_id"]').value,
-    };
-    FACE_FIELDS.forEach((f) => {
-      variant[f] = fs.querySelector(`[name="${f}"]`).value;
-    });
-    variants[gender] = variant;
-  });
-  return variants;
-}
 
 function buildBody(isCreate) {
   const body = {
     model: modelInput.value,
+    first_name: firstNameInput.value,
+    last_name: lastNameInput.value,
+    title: titleInput.value,
+    gender: genderInput.value,
+    default_anrede: defaultAnredeInput.value,
+    voice_id: voiceIdInput.value,
+    system_prompt: systemPromptInput.value,
     always_loaded: alwaysLoadedInput.checked,
     max_tokens: Number(maxTokensInput.value),
     reengagement_tendency: Number(reengagementInput.value),
     color: colorInput.value,
     background_color: backgroundColorInput.value,
-    variants: collectVariants(),
+    long_term_agenda: longTermAgendaInput.value,
+    daily_agenda: dailyAgendaInput.value,
+    own_backstory: ownBackstoryInput.value,
+    own_interests: ownInterestsInput.value,
+    family_relations: familyRelationsInput.value,
   };
+  FACE_FIELDS.forEach((f) => {
+    body[f] = document.querySelector(`[name="${f}"]`).value;
+  });
   if (isCreate) body.id = idInput.value;
   return body;
 }

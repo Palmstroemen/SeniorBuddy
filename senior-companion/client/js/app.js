@@ -49,7 +49,8 @@ let listening = false;         // Soll-Zustand: soll der Recognizer gerade laufe
 let lastUtteranceText = "";
 let lastUtterancePersona = null;
 let preparedResumeAudio = null; // waehrend der Pause vorab geholtes "resumed"-Audio (siehe pauseSystem())
-const PERSONA_NAMES = {};
+const PERSONA_NAMES = {};          // fuer sichtbare Beschriftungen - voller display_name (z.B. "Professor Wallner")
+const PERSONA_ADDRESS_NAMES = {};  // fuer addressPersona() - ohne Titel (z.B. "Wallner"), muss zu room.py's Ansprache-Erkennung passen
 const PERSONA_COLORS = {};
 const PERSONA_FACES = {};      // personaId -> {face_eyebrows, face_eyes, face_mouth, face_hairstyle, face_beard}
 
@@ -346,6 +347,7 @@ async function loadPersonas() {
   personaTabs.innerHTML = "";
   personas.forEach((p) => {
     PERSONA_NAMES[p.id] = p.display_name;
+    PERSONA_ADDRESS_NAMES[p.id] = p.address_name;
     PERSONA_COLORS[p.id] = { color: p.color, background: p.background_color };
     PERSONA_FACES[p.id] = {
       face_eyebrows: p.face_eyebrows,
@@ -381,7 +383,7 @@ async function loadPersonas() {
 // Server auch bei getipptem/gesprochenem Text erkennt (room.py),
 // deshalb kein zweiter Erkennungsweg noetig.
 function addressPersona(personaId) {
-  const name = PERSONA_NAMES[personaId];
+  const name = PERSONA_ADDRESS_NAMES[personaId];
   if (!name) return;
   const current = textInput.value.trimStart();
   if (!current.toLowerCase().startsWith(name.toLowerCase())) {

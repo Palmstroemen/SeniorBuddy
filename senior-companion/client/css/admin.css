@@ -215,29 +215,34 @@
   gap: 10px;
 }
 
-.variant-fieldset {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 12px 14px;
-  margin: 0;
+.admin-select-with-link {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 10px;
 }
 
-.variant-fieldset legend {
-  font-family: var(--font-display);
-  font-weight: 600;
-  padding: 0 6px;
+.admin-select-with-link select {
+  flex: 1;
 }
 
-.variant-fieldset label {
-  font-size: 15px;
-  font-weight: 600;
+.admin-external-link {
+  font-size: 14px;
+  white-space: nowrap;
+  color: var(--sage);
 }
 
-.variant-face-preview {
-  width: 64px;
-  height: 64px;
-  align-self: center;
+.admin-narrative-fields {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+
+.admin-narrative-fields summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.admin-narrative-fields label {
+  display: block;
+  margin-top: 10px;
 }

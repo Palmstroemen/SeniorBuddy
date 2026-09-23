@@ -3,7 +3,9 @@ Tests fuer die Persona-Designer-Admin-API (/admin/personas/*) in
 main.py: Personas anlegen/bearbeiten/loeschen ohne Code anzufassen -
 wirkt sofort, uebersteht einen simulierten Neustart, respektiert dass
 die 4 mitgelieferten Personas nie ganz verschwinden duerfen (nur
-zuruecksetzbar sind).
+zuruecksetzbar sind). Flaches Schema (siehe config.py::PersonaConfig) -
+eine Persona hat EIN Geschlecht, EINEN Namen, EINE Stimme, kein
+Varianten-Dict mehr.
 """
 import config
 import main
@@ -21,34 +23,32 @@ def _admin_token(monkeypatch):
 @pytest.fixture(autouse=True)
 def _reset_persona_state():
     ids_before = set(config.PERSONAS.keys())
-    genders_before = dict(config.PERSONA_GENDER)
     yield
     for extra_id in set(config.PERSONAS.keys()) - ids_before:
         del config.PERSONAS[extra_id]
-        config.PERSONA_GENDER.pop(extra_id, None)
     for persona_id in ids_before:
         if persona_id in config._BUILTIN_PERSONAS:
             config.PERSONAS[persona_id] = config._BUILTIN_PERSONAS[persona_id]
-    config.PERSONA_GENDER.clear()
-    config.PERSONA_GENDER.update(genders_before)
 
 
 def _persona_body(persona_id="nachbarin", **overrides):
     """persona_id=None laesst das 'id'-Feld ganz weg (fuer PUT-Bodies,
     die 'id' bewusst nicht enthalten - die Ziel-ID kommt eindeutig aus
-    dem Pfad, siehe PersonaFieldsIn vs. PersonaCreateIn im Plan)."""
+    dem Pfad, siehe PersonaFieldsIn vs. PersonaCreateIn)."""
     body = {
         "model": "qwen2.5:7b-instruct",
+        "first_name": "Erna",
+        "last_name": "",
+        "title": "",
+        "gender": "weiblich",
+        "default_anrede": "sie",
+        "voice_id": "v1",
+        "system_prompt": "Ein Prompt.",
         "always_loaded": True,
         "max_tokens": 400,
         "reengagement_tendency": 0.5,
         "color": "#7A5C99",
         "background_color": "#EEE9F2",
-        "variants": {
-            "neutral": {"display_name": "Erna", "system_prompt": "Sie-Form bitte.", "voice_id": "v1"},
-            "weiblich": {"display_name": "Erna (Nachbarin)", "system_prompt": "Sie-Form bitte.", "voice_id": "v2"},
-            "maennlich": {"display_name": "Erwin (Nachbar)", "system_prompt": "Sie-Form bitte.", "voice_id": "v3"},
-        },
     }
     if persona_id is not None:
         body["id"] = persona_id
@@ -93,6 +93,12 @@ def test_get_single_persona_also_includes_is_builtin():
     assert r.json()["is_builtin"] is True
 
 
+def test_get_single_persona_includes_computed_display_name():
+    with TestClient(main.app) as client:
+        r = client.get("/admin/personas/professor", headers=ADMIN_HEADERS)
+    assert r.json()["display_name"] == "Professor Wallner"
+
+
 def test_create_persona_rejects_duplicate_id():
     with TestClient(main.app) as client:
         r = client.post("/admin/personas", json=_persona_body("freundin"), headers=ADMIN_HEADERS)
@@ -105,11 +111,19 @@ def test_create_persona_rejects_bad_id_format():
     assert r.status_code == 422
 
 
-def test_create_persona_rejects_missing_gender_variant():
-    body = _persona_body()
-    del body["variants"]["maennlich"]
+def test_create_persona_rejects_unknown_gender():
     with TestClient(main.app) as client:
-        r = client.post("/admin/personas", json=body, headers=ADMIN_HEADERS)
+        r = client.post(
+            "/admin/personas", json=_persona_body(gender="quatsch"), headers=ADMIN_HEADERS,
+        )
+    assert r.status_code == 422
+
+
+def test_create_persona_rejects_unknown_default_anrede():
+    with TestClient(main.app) as client:
+        r = client.post(
+            "/admin/personas", json=_persona_body(default_anrede="quatsch"), headers=ADMIN_HEADERS,
+        )
     assert r.status_code == 422
 
 
@@ -128,36 +142,34 @@ def test_create_persona_rejects_bad_color_format():
 
 
 def test_create_persona_rejects_unknown_face_option():
-    body = _persona_body()
-    body["variants"]["neutral"]["face_eyes"] = "banane"
     with TestClient(main.app) as client:
-        r = client.post("/admin/personas", json=body, headers=ADMIN_HEADERS)
+        r = client.post(
+            "/admin/personas", json=_persona_body(face_eyes="banane"), headers=ADMIN_HEADERS,
+        )
     assert r.status_code == 422
 
 
 def test_create_persona_without_face_fields_uses_defaults():
-    """_persona_body()'s Varianten enthalten bewusst keine face_*-
-    Schluessel (altes Format) - muss trotzdem erfolgreich anlegen und
-    auf die Pydantic-Defaults zurueckfallen, nicht mit 422 scheitern."""
+    """_persona_body() enthaelt bewusst keine face_*-Schluessel - muss
+    trotzdem erfolgreich anlegen und auf die Pydantic-Defaults
+    zurueckfallen, nicht mit 422 scheitern."""
     with TestClient(main.app) as client:
         r = client.post("/admin/personas", json=_persona_body(), headers=ADMIN_HEADERS)
         assert r.status_code == 201
         r2 = client.get("/admin/personas/nachbarin", headers=ADMIN_HEADERS)
-    neutral = r2.json()["variants"]["neutral"]
-    assert neutral["face_eyebrows"] == "neutral"
-    assert neutral["face_beard"] == ""
+    data = r2.json()
+    assert data["face_eyebrows"] == "neutral"
+    assert data["face_beard"] == ""
 
 
 def test_create_persona_with_face_fields_roundtrips():
-    body = _persona_body()
-    body["variants"]["maennlich"]["face_beard"] = "fullBeard"
-    body["variants"]["maennlich"]["face_hairstyle"] = "dutt"
+    body = _persona_body(face_beard="fullBeard", face_hairstyle="dutt")
     with TestClient(main.app) as client:
         client.post("/admin/personas", json=body, headers=ADMIN_HEADERS)
         r = client.get("/admin/personas/nachbarin", headers=ADMIN_HEADERS)
-    maennlich = r.json()["variants"]["maennlich"]
-    assert maennlich["face_beard"] == "fullBeard"
-    assert maennlich["face_hairstyle"] == "dutt"
+    data = r.json()
+    assert data["face_beard"] == "fullBeard"
+    assert data["face_hairstyle"] == "dutt"
 
 
 def test_create_persona_with_reaction_phrases_roundtrips():
@@ -167,6 +179,28 @@ def test_create_persona_with_reaction_phrases_roundtrips():
         client.post("/admin/personas", json=body, headers=ADMIN_HEADERS)
         r = client.get("/admin/personas/nachbarin", headers=ADMIN_HEADERS)
     assert r.json()["reaction_phrases"] == {"interrupted": ["Äh?", "Moment!"]}
+
+
+def test_create_persona_with_narrative_fields_roundtrips_but_stays_inert():
+    """Die 4 neuen Agenda-/Geschichte-Felder (+ Verwandtschaft) werden
+    angenommen/persistiert, beeinflussen aber (noch) kein Verhalten -
+    siehe config.py::PersonaConfig-Docstring."""
+    body = _persona_body(
+        long_term_agenda="Will irgendwann von Enkelkindern hoeren.",
+        daily_agenda="Fragt heute nach dem Wetter.",
+        own_backstory="Ist in einem kleinen Dorf aufgewachsen.",
+        own_interests="Gaertnern, alte Filme.",
+        family_relations="Hat einen jüngeren Bruder, Tom.",
+    )
+    with TestClient(main.app) as client:
+        client.post("/admin/personas", json=body, headers=ADMIN_HEADERS)
+        r = client.get("/admin/personas/nachbarin", headers=ADMIN_HEADERS)
+    data = r.json()
+    assert data["long_term_agenda"] == "Will irgendwann von Enkelkindern hoeren."
+    assert data["daily_agenda"] == "Fragt heute nach dem Wetter."
+    assert data["own_backstory"] == "Ist in einem kleinen Dorf aufgewachsen."
+    assert data["own_interests"] == "Gaertnern, alte Filme."
+    assert data["family_relations"] == "Hat einen jüngeren Bruder, Tom."
 
 
 def test_update_persona_preserves_reaction_phrases_when_resent_unchanged():
@@ -179,7 +213,7 @@ def test_update_persona_preserves_reaction_phrases_when_resent_unchanged():
     create_body["reaction_phrases"] = {"interrupted": ["Äh?"]}
     update_body = _persona_body(None)
     update_body["reaction_phrases"] = {"interrupted": ["Äh?"]}
-    update_body["variants"]["neutral"]["system_prompt"] = "Neuer Prompt, Sie-Form."
+    update_body["system_prompt"] = "Neuer Prompt."
     with TestClient(main.app) as client:
         client.post("/admin/personas", json=create_body, headers=ADMIN_HEADERS)
         client.put("/admin/personas/nachbarin", json=update_body, headers=ADMIN_HEADERS)
@@ -188,12 +222,19 @@ def test_update_persona_preserves_reaction_phrases_when_resent_unchanged():
 
 
 def test_update_persona_takes_effect_immediately():
-    body = _persona_body(None)
-    body["variants"]["neutral"]["system_prompt"] = "Neuer Prompt, Sie-Form."
+    body = _persona_body(None, system_prompt="Neuer Prompt.")
     with TestClient(main.app) as client:
         r = client.put("/admin/personas/reporter", json=body, headers=ADMIN_HEADERS)
     assert r.status_code == 200
-    assert main.PERSONAS["reporter"].system_prompt == "Neuer Prompt, Sie-Form."
+    assert main.PERSONAS["reporter"].system_prompt == "Neuer Prompt."
+
+
+def test_update_persona_can_change_gender():
+    body = _persona_body(None, gender="maennlich")
+    with TestClient(main.app) as client:
+        r = client.put("/admin/personas/reporter", json=body, headers=ADMIN_HEADERS)
+    assert r.status_code == 200
+    assert main.PERSONAS["reporter"].gender == "maennlich"
 
 
 def test_update_persona_rejects_unknown_id():
@@ -212,15 +253,14 @@ def test_create_persona_takes_effect_immediately_in_persona_lookup():
 
 
 def test_update_persona_survives_simulated_restart():
-    body = _persona_body(None)
-    body["variants"]["neutral"]["system_prompt"] = "Ueberlebt Neustart, Sie-Form."
+    body = _persona_body(None, system_prompt="Ueberlebt Neustart.")
     with TestClient(main.app) as client:
         r = client.put("/admin/personas/reporter", json=body, headers=ADMIN_HEADERS)
     assert r.status_code == 200
 
     main.PERSONAS["reporter"] = config._BUILTIN_PERSONAS["reporter"]
     main._apply_persisted_admin_settings()
-    assert main.PERSONAS["reporter"].system_prompt == "Ueberlebt Neustart, Sie-Form."
+    assert main.PERSONAS["reporter"].system_prompt == "Ueberlebt Neustart."
 
 
 def test_delete_custom_persona_removes_it_entirely():
@@ -236,8 +276,7 @@ def test_delete_custom_persona_removes_it_entirely():
 
 def test_delete_builtin_persona_reverts_instead_of_removing():
     original_prompt = config._BUILTIN_PERSONAS["freundin"].system_prompt
-    body = _persona_body(None)
-    body["variants"]["neutral"]["system_prompt"] = "Veraendert, Sie-Form."
+    body = _persona_body(None, system_prompt="Veraendert.")
     with TestClient(main.app) as client:
         client.put("/admin/personas/freundin", json=body, headers=ADMIN_HEADERS)
         r = client.delete("/admin/personas/freundin", headers=ADMIN_HEADERS)

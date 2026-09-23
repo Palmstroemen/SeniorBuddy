@@ -86,6 +86,14 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/voices")
+async def list_voices():
+    """Tatsaechlich vorhandene Piper-Stimmen (Dateistaemme unter
+    voices/*.onnx) - fuer das Stimmen-Dropdown im Persona-Designer
+    (server/main.py's GET /admin/voices, ueber speech_client.list_voices())."""
+    return sorted(p.stem for p in config.VOICES_DIR.glob("*.onnx"))
+
+
 @app.post("/transcribe")
 async def transcribe(audio: UploadFile):
     """Nimmt eine Browser-Aufnahme entgegen (ueblich: audio/webm mit
