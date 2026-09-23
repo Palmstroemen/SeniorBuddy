@@ -455,6 +455,36 @@ def test_parse_branch_tag_treats_single_or_zero_options_as_no_branch():
     assert options == []
 
 
+# Live beobachtet (Session-Notiz 2026-09-23): die Person hoerte woertlich
+# "Verzweigung - keine" gesprochen - ein kleines Modell hatte das
+# "---"-Trennzeichen aus BRANCH_TAG_INSTRUCTION weggelassen, aber die
+# VERZWEIGUNG:-Zeile selbst trotzdem angehaengt. Der alte
+# raw.rfind("---")-basierte Parser fand dadurch KEIN Tag und lieferte
+# den gesamten Rohtext (inklusive Tag-Zeile) unveraendert als "clean"
+# Text zurueck, der dann synthetisiert und ausgesprochen wurde - ein
+# echter, produktions-beobachteter Bug, kein hypothetischer Edge-Case.
+def test_parse_branch_tag_strips_tag_even_without_leading_dashes_separator():
+    raw = "Ach, das erinnert mich an frueher.\nVERZWEIGUNG: keine"
+    clean, options = lookahead._parse_branch_tag(raw)
+    assert clean == "Ach, das erinnert mich an frueher."
+    assert options == []
+    assert "VERZWEIGUNG" not in clean.upper()
+
+
+def test_parse_branch_tag_strips_tag_glued_onto_end_of_sentence_without_newline():
+    raw = "Wie war denn Ihr Tag heute? VERZWEIGUNG: keine"
+    clean, options = lookahead._parse_branch_tag(raw)
+    assert clean == "Wie war denn Ihr Tag heute?"
+    assert "VERZWEIGUNG" not in clean.upper()
+
+
+def test_parse_branch_tag_strips_options_line_too_without_dashes_separator():
+    raw = "Moegen Sie lieber Politik oder Musik?\nVERZWEIGUNG: ja\nOPTIONEN: Politik | Musik"
+    clean, options = lookahead._parse_branch_tag(raw)
+    assert clean == "Moegen Sie lieber Politik oder Musik?"
+    assert options == ["Politik", "Musik"]
+
+
 async def test_extend_chain_builds_fork_root_and_queues_one_child_call_per_option(monkeypatch):
     replies = {0: "Erster Satz.", 1: _FORK_TAG_RAW}
     fake_stream, _ = _indexed_stream_factory(replies)

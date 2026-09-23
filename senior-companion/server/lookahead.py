@@ -44,6 +44,7 @@ discard_chain().
 import asyncio
 import dataclasses
 import logging
+import re
 
 import autoturn
 import config
@@ -315,6 +316,20 @@ def _create_fork_children(fork_root: ChainLevel, options: list[str]) -> list[Cha
     return children
 
 
+# Findet die VERZWEIGUNG:-Zeile UNABHAENGIG davon, ob das Modell auch
+# das "---"-Trennzeichen aus BRANCH_TAG_INSTRUCTION mitgeliefert hat,
+# auf einer eigenen Zeile steht, oder direkt (ohne Zeilenumbruch) an
+# den sichtbaren Text angehaengt ist. Live beobachtet (Session-Notiz
+# 2026-09-23): ein kleines Modell liess das "---" einfach weg, wodurch
+# die alte rfind("---")-Suche das Tag gar nicht fand und die komplette
+# Roh-Antwort (samt "VERZWEIGUNG: keine") unveraendert weiterreichte -
+# wurde dann tatsaechlich mitgesprochen. Ein fehlendes Trennzeichen
+# darf also NIE dazu fuehren, dass das Tag selbst sichtbar/hoerbar
+# bleibt - nur ob daraus eine echte Verzweigung wird, darf unsicher
+# sein (siehe branch != "ja"-Fallback unten).
+_BRANCH_TAG_START = re.compile(r"-{0,3}\s*verzweigung\s*:", re.IGNORECASE)
+
+
 def _parse_branch_tag(raw: str) -> tuple[str, list[str]]:
     """Trennt den von BRANCH_TAG_INSTRUCTION angeforderten
     VERZWEIGUNG:/OPTIONEN:-Block vom eigentlichen Text ab - gleiches
@@ -322,12 +337,12 @@ def _parse_branch_tag(raw: str) -> tuple[str, list[str]]:
     fehlendes/fehlformatiertes Tag faellt IMMER auf "keine Verzweigung"
     zurueck, nie auf eine erfundene (ein kleines lokales Modell haelt
     sich nicht immer exakt ans vorgegebene Format)."""
-    marker_idx = raw.rfind("---")
-    if marker_idx == -1:
+    match = _BRANCH_TAG_START.search(raw)
+    if match is None:
         return raw.strip(), []
 
-    clean = raw[:marker_idx].strip()
-    tag_block = raw[marker_idx:]
+    clean = raw[:match.start()].strip()
+    tag_block = raw[match.start():]
 
     branch = "keine"
     options: list[str] = []

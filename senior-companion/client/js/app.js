@@ -228,7 +228,6 @@ function stageIdle() {
 // (Token-Tempo ist durchs LLM gedrosselt) guenstig genug - kein Diffing
 // noetig.
 function renderAvatarStage() {
-  stopMouthAnimation(); // altes Intervall zielt sonst auf ein gleich entferntes Element
   if (presentPersonas.size === 0) {
     stageIdle();
     return;
@@ -260,42 +259,66 @@ function renderAvatarStage() {
 }
 
 // Einzige Stelle, die entscheidet, WIE sich eine sprechende Kachel von
-// einer nur-anwesenden unterscheidet - heute Pulsieren + Rahmen UND
-// (neu) eine einfache Mund-Animation. Eine spaetere, elegantere
-// Sprechanimation ersetzt nur DIESE Funktion (und ihre Helfer),
-// renderAvatarStage() selbst bleibt unveraendert.
+// einer nur-anwesenden unterscheidet - Pulsieren + Rahmen, sobald
+// diese Person laut speakingPersona "dran" ist (optimistisch, schon
+// beim ersten Text-Token, siehe dort). Die MUND-Animation selbst
+// laeuft NICHT mehr hier mit, sondern komplett getrennt ueber
+// mouthAnimationTick() unten - siehe Begruendung dort.
 function applySpeakingCue(tileBg, personaId, isSpeaking) {
   tileBg.classList.toggle("speaking", isSpeaking);
-  if (isSpeaking) {
-    startMouthAnimation(tileBg, personaId);
-  }
 }
 
 // Kein echtes Lippen-Lesen - wechselt im Sprechrhythmus einfach
 // zwischen dem Ruhe-Mund der Persona und einer offenen Variante
-// ("agape"). Nur eine Persona kann gleichzeitig sprechen, daher genuegt
-// eine einzige Modul-Variable ohne weiteres Gating.
-let mouthAnimationInterval = null;
+// ("agape"). EIN durchgehendes Intervall fuer die ganze App-Laufzeit
+// (statt pro renderAvatarStage()-Aufruf neu gestartet wie zuvor) -
+// Grund: an isCurrentlySpeaking() (ECHTE Audio-Wiedergabe/-Synthese)
+// gekoppelt, nicht an den Text-Token-/Done-Nachrichten-Rhythmus. Live
+// beobachtet (Session-Notiz 2026-09-23): vorher lief die Animation
+// schon los, sobald Text zu streamen begann - Sprachausgabe braucht
+// aber noch Synthese-/Netzwerkzeit bis zum ersten Ton - und blieb nach
+// "done" unveraendert weiterlaufen, obwohl das eigentliche Audio
+// laengst fertig war. tileBg wird bei jedem renderAvatarStage()
+// komplett neu gebaut (dort per innerHTML ersetzt), daher hier IMMER
+// frisch ueber [data-persona] nachgeschlagen statt eine Referenz aus
+// einem frueheren Render zu halten (die waere sonst ein Zombie-Element).
+const MOUTH_ANIMATION_INTERVAL_MS = 220;
+let mouthOpen = false;
+let mouthActivePersona = null; // wessen Mund gerade offen gehalten wird
 
-function stopMouthAnimation() {
-  if (mouthAnimationInterval) {
-    clearInterval(mouthAnimationInterval);
-    mouthAnimationInterval = null;
+function _avatarTileFor(personaId) {
+  return avatarStage.querySelector(`.avatar-shape-bg[data-persona="${personaId}"]`);
+}
+
+function _resetMouthIfNeeded() {
+  if (!mouthActivePersona) return;
+  const tileBg = _avatarTileFor(mouthActivePersona);
+  const face = faceFor(mouthActivePersona);
+  if (tileBg && face && FACE_DATA) {
+    tileBg.innerHTML = avatarSvg(mouthActivePersona, FACE_DATA, face);
   }
+  mouthActivePersona = null;
+  mouthOpen = false;
 }
 
-function startMouthAnimation(tileBg, personaId) {
-  const face = faceFor(personaId);
-  if (!face || !FACE_DATA) return;
-  let open = false;
-  mouthAnimationInterval = setInterval(() => {
-    open = !open;
-    tileBg.innerHTML = avatarSvg(personaId, FACE_DATA, {
-      ...face,
-      face_mouth: open ? "agape" : face.face_mouth,
-    });
-  }, 220);
+function mouthAnimationTick() {
+  const speaking = Boolean(speakingPersona) && isCurrentlySpeaking();
+  if (!speaking) {
+    _resetMouthIfNeeded();
+    return;
+  }
+  const face = faceFor(speakingPersona);
+  const tileBg = _avatarTileFor(speakingPersona);
+  if (!face || !FACE_DATA || !tileBg) return;
+  mouthOpen = !mouthOpen;
+  mouthActivePersona = speakingPersona;
+  tileBg.innerHTML = avatarSvg(speakingPersona, FACE_DATA, {
+    ...face,
+    face_mouth: mouthOpen ? "agape" : face.face_mouth,
+  });
 }
+
+setInterval(mouthAnimationTick, MOUTH_ANIMATION_INTERVAL_MS);
 
 // Merkt eine Persona als anwesend (fuegt sie ggf. neu hinzu) und
 // aktualisiert ihren Aktivitaets-Zeitstempel.
