@@ -37,6 +37,12 @@ import speech_client
 
 log = logging.getLogger("lookahead")
 
+# Wie viele Stufen eine Kette maximal vorausbaut - eigener Name statt
+# eines wiederholten Literals, u.a. fuer debug_state() unten (Live-KPI-
+# Anzeige waehrend der Entwicklung, siehe main.py's
+# /api/lookahead-debug/{user_id}).
+TARGET_DEPTH = 5
+
 
 @dataclasses.dataclass
 class ChainLevel:
@@ -115,7 +121,7 @@ async def _extend_chain(user_id: str, generation: int) -> None:
             chain = _chains.get(user_id)
             if chain is None or chain.generation != generation:
                 return
-            if len(chain.levels) >= 5:
+            if len(chain.levels) >= TARGET_DEPTH:
                 return
 
             depth = len(chain.levels) + 1
@@ -267,6 +273,25 @@ def chain_persona_id(user_id: str) -> str | None:
     anwesend ist, ohne dass main.py direkt in _chains greifen muss."""
     chain = _chains.get(user_id)
     return chain.persona_id if chain is not None else None
+
+
+def debug_state(user_id: str) -> dict | None:
+    """Fuer main.py's GET /api/lookahead-debug/{user_id} - eine sehr
+    knappe Live-KPI-Anzeige waehrend der Entwicklung (Session-Notiz
+    2026-09-23: bewusst nur Zahlen, kein Baum, keine Kandidaten-Texte -
+    K.I.S.S., ausdruecklich als temporaeres Entwicklungs-Werkzeug
+    gedacht, spaeter wieder entfernen/verstecken). None, wenn gerade
+    keine Kette fuer diese Person existiert."""
+    chain = _chains.get(user_id)
+    if chain is None:
+        return None
+    head = chain.levels[0] if chain.levels else None
+    return {
+        "persona_id": chain.persona_id,
+        "levels_built": len(chain.levels),
+        "target_depth": TARGET_DEPTH,
+        "head_has_audio": head.audio is not None if head else False,
+    }
 
 
 def stats() -> dict:

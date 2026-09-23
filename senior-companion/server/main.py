@@ -151,6 +151,18 @@ def transparency_log(user_id: str):
     return memory.get_transparency_log(user_id)
 
 
+@app.get("/api/lookahead-debug/{user_id}")
+def lookahead_debug(user_id: str):
+    """Live-KPI-Anzeige neben der Avatar-Buehne waehrend der
+    Entwicklung (Session-Notiz 2026-09-23) - bewusst temporaer, spaeter
+    wieder entfernen/verstecken. Bewusst OHNE Admin-Auth (wie
+    /api/transparency/{user_id}) - reine Lese-Anzeige des eigenen,
+    laufenden Sitzungszustands, keine privilegierte Operation. {} statt
+    404, wenn gerade keine Kette existiert - der Client soll dann
+    einfach "nichts im Voraus" anzeigen, kein Fehlerfall."""
+    return lookahead.debug_state(user_id) or {}
+
+
 @app.get("/api/plugins")
 def list_plugins():
     return [

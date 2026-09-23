@@ -240,6 +240,48 @@ def test_stats_delivery_rate_is_zero_not_error_when_nothing_built_at_that_depth(
     assert result["delivery_rate_by_depth"]["5"] == 0.0
 
 
+def test_debug_state_returns_none_when_no_chain_exists():
+    assert lookahead.debug_state("lookahead_debug_user_a") is None
+
+
+def test_debug_state_reports_levels_built_and_target_depth():
+    chain = lookahead.Chain(user_id="lookahead_debug_user_b", persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Eins"))
+    chain.levels.append(lookahead.ChainLevel(depth=2, kind="continue_new_topic", text="Zwei"))
+    lookahead._chains["lookahead_debug_user_b"] = chain
+
+    state = lookahead.debug_state("lookahead_debug_user_b")
+
+    assert state["persona_id"] == "freundin"
+    assert state["levels_built"] == 2
+    assert state["target_depth"] == lookahead.TARGET_DEPTH
+
+
+def test_debug_state_reports_whether_head_has_audio():
+    chain = lookahead.Chain(user_id="lookahead_debug_user_c", persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Eins", audio=b"wav"))
+    lookahead._chains["lookahead_debug_user_c"] = chain
+
+    assert lookahead.debug_state("lookahead_debug_user_c")["head_has_audio"] is True
+
+
+def test_debug_state_head_has_audio_false_without_rendered_audio():
+    chain = lookahead.Chain(user_id="lookahead_debug_user_d", persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Eins"))
+    lookahead._chains["lookahead_debug_user_d"] = chain
+
+    assert lookahead.debug_state("lookahead_debug_user_d")["head_has_audio"] is False
+
+
+def test_debug_state_head_has_audio_false_when_chain_has_no_levels_yet():
+    chain = lookahead.Chain(user_id="lookahead_debug_user_e", persona_id="freundin")
+    lookahead._chains["lookahead_debug_user_e"] = chain
+
+    state = lookahead.debug_state("lookahead_debug_user_e")
+    assert state["levels_built"] == 0
+    assert state["head_has_audio"] is False
+
+
 async def test_extend_chain_stops_writing_after_generation_bumped(monkeypatch):
     started = asyncio.Event()
     release = asyncio.Event()

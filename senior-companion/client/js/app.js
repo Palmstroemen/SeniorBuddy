@@ -97,6 +97,7 @@ const avatarStage = document.getElementById("avatarStage");
 const personaTabs = document.getElementById("personaTabs");
 const versionBadge = document.getElementById("versionBadge");
 const chatHint = document.getElementById("chatHint");
+const lookaheadKpi = document.getElementById("lookaheadKpi");
 const textInput = document.getElementById("textInput");
 const sendBtn = document.getElementById("sendBtn");
 const pauseBtn = document.getElementById("pauseBtn");
@@ -1076,6 +1077,32 @@ async function togglePlugin(id, enabled) {
     body: JSON.stringify({ enabled }),
   });
 }
+
+// --- Lookahead-KPI (temporaeres Entwicklungs-Werkzeug) -----------------
+// Siehe index.html's Kommentar neben #lookaheadKpi - zeigt live, wie
+// viele Saetze lookahead.py im Voraus gebaut hat. Reine Poll-Anzeige,
+// keine neue WebSocket-Nachricht - haelt main.py's/lookahead.py's
+// bestehende Mechanik unangetastet, nur der neue, unauthentifizierte
+// GET /api/lookahead-debug/{user_id} wird dafuer abgefragt.
+const LOOKAHEAD_POLL_INTERVAL_MS = 500;
+
+async function pollLookaheadDebug() {
+  try {
+    const res = await fetch(`/api/lookahead-debug/${encodeURIComponent(USER_ID)}`);
+    const data = await res.json();
+    if (!data || data.levels_built === undefined) {
+      lookaheadKpi.hidden = true;
+      return;
+    }
+    const audioMark = data.head_has_audio ? " 🔊" : "";
+    lookaheadKpi.textContent = `Lookahead: ${data.levels_built}/${data.target_depth}${audioMark}`;
+    lookaheadKpi.hidden = false;
+  } catch (err) {
+    // still scheitern - reine Entwicklungs-Anzeige, kein Fehlerfall
+  }
+}
+
+setInterval(pollLookaheadDebug, LOOKAHEAD_POLL_INTERVAL_MS);
 
 // --- Service Worker registrieren (PWA) --------------------------------
 if ("serviceWorker" in navigator) {

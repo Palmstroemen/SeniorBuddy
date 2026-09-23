@@ -89,6 +89,31 @@ def test_transparency_endpoint_empty_for_new_user():
     assert r.json() == []
 
 
+def test_lookahead_debug_endpoint_empty_object_when_no_chain():
+    with TestClient(main.app) as client:
+        r = client.get("/api/lookahead-debug/brandneuer_nutzer")
+    assert r.status_code == 200
+    assert r.json() == {}
+
+
+def test_lookahead_debug_endpoint_reports_chain_state():
+    chain = lookahead.Chain(user_id="lookahead_debug_endpoint_user", persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Eins", audio=b"wav"))
+    chain.levels.append(lookahead.ChainLevel(depth=2, kind="continue_new_topic", text="Zwei"))
+    lookahead._chains["lookahead_debug_endpoint_user"] = chain
+    try:
+        with TestClient(main.app) as client:
+            r = client.get("/api/lookahead-debug/lookahead_debug_endpoint_user")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["persona_id"] == "freundin"
+        assert data["levels_built"] == 2
+        assert data["target_depth"] == lookahead.TARGET_DEPTH
+        assert data["head_has_audio"] is True
+    finally:
+        lookahead._chains.pop("lookahead_debug_endpoint_user", None)
+
+
 def test_story_consent_endpoint():
     with TestClient(main.app) as client:
         r = client.post(

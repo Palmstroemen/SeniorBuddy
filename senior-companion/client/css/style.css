@@ -165,6 +165,19 @@ body {
   opacity: 0.6;
 }
 
+/* Temporaeres Entwicklungs-Werkzeug, siehe index.html's Kommentar
+   daneben - bewusst unauffaellig (kleine Monospace-Zahl), aber nicht
+   versteckt. [hidden], solange app.js noch keine Kette gesehen hat. */
+.lookahead-kpi {
+  flex-shrink: 0;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--ink-soft);
+  background: var(--sage-soft);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
 /* Bewusst OHNE Kreis/Rahmen und deutlich groesser als zuvor (44px
    Kreis mit 24px-Glyphe) - etwa so gross wie die Avatar-Kacheln
    (avatar-icon-bg, 48px), damit das Zahnrad auf den ersten Blick als
