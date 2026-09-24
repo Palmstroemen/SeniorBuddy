@@ -1178,3 +1178,13 @@ if ("serviceWorker" in navigator) {
 }
 
 loadPersonas();
+
+// Wiedereinstieg vom Persona-Designer (admin.js's "Abmelden" fuehrt
+// hierher zurueck, siehe dort) - Panel automatisch wieder oeffnen,
+// statt die Person auf der leeren Chat-Ansicht stehen zu lassen. Hash
+// sofort entfernen, sonst wuerde ein blosses Neuladen dieser Seite das
+// Panel jedes Mal erneut aufreissen.
+if (location.hash === "#einstellungen") {
+  history.replaceState(null, "", location.pathname + location.search);
+  openPanel();
+}

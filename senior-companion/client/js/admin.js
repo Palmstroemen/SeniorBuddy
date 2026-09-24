@@ -351,7 +351,13 @@ loginForm.addEventListener("submit", (e) => {
 
 logoutBtn.addEventListener("click", () => {
   localStorage.removeItem(TOKEN_KEY);
-  showLoginView();
+  // Fuehrt zurueck ins Haupt-App-Einstellungspanel (dort liegt auch
+  // der Link HIERHER, siehe index.html's "Persona-Designer öffnen") -
+  // der Login-Bildschirm ist waehrend der Entwicklung (kein
+  // SENIOR_COMPANION_ADMIN_TOKEN gesetzt) ohnehin nur eine unnoetige
+  // Zwischenstation (Session-Notiz 2026-09-24). #einstellungen loest
+  // in app.js das automatische Wiederoeffnen des Panels aus.
+  window.location.href = "/#einstellungen";
 });
 
 async function init() {
