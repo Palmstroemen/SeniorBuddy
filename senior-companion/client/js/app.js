@@ -588,6 +588,18 @@ function playPreparedAudio(blob) {
 function sendMessage() {
   const text = textInput.value.trim();
   if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
+  // Aktives Tippen+Senden ist ein eindeutiges "ich bin wieder da, JETZT"
+  // - hebt eine laufende Pause mit auf. Bewusst OHNE resumeSystem()s
+  // "Willkommen zurueck"-Aeusserung/Wiederholung des letzten Satzes:
+  // die Person tippt gerade aktiv etwas Neues, braucht keine
+  // Wiedereinstiegshilfe. Muss VOR dem eigentlichen Senden passieren -
+  // sonst wuerde die eintreffende Antwort vom weiterhin "paused"
+  // websocket-Handler stillschweigend verworfen (siehe dort).
+  if (paused) {
+    setPausedUiState(false);
+    preparedResumeAudio = null;
+    startListening();
+  }
   addBubble(text, "user");
   const wasInterrupted = isCurrentlySpeaking();
   const interruptedPersona = currentPersona;
@@ -811,13 +823,22 @@ if (!SpeechRecognition && !navigator.mediaDevices) {
 // anzuhalten (z.B. Toilettengang, Telefonanruf) und spaeter wieder
 // aufzunehmen - siehe Anfrage vom 2026-09-22.
 
+// Nur der Knopf-/Zustands-Teil, den pauseSystem()/resumeSystem() UND
+// das stille Aufheben beim Senden waehrend einer Pause (siehe
+// sendMessage()) gemeinsam brauchen - OHNE die "Willkommen zurueck"-
+// Aeusserung/Wiederholung, die nur beim expliziten ▶️-Knopfdruck
+// passend ist (siehe resumeSystem()).
+function setPausedUiState(isPaused) {
+  paused = isPaused;
+  pauseBtn.textContent = isPaused ? "▶️" : "⏸️";
+  pauseBtn.setAttribute("aria-label", isPaused ? "Weiter" : "Pause");
+  pauseBtn.classList.toggle("paused", isPaused);
+}
+
 function pauseSystem() {
   if (paused) return;
-  paused = true;
-  pauseBtn.textContent = "▶️";
-  pauseBtn.setAttribute("aria-label", "Weiter");
+  setPausedUiState(true);
   pauseBtn.classList.remove("recording");
-  pauseBtn.classList.add("paused");
   stopCurrentSpeech();
   stopListening();
   lastSpeechEndTs = null; // Pausendauer selbst ist keine echte Sprechpause der Person
@@ -839,10 +860,7 @@ function pauseSystem() {
 
 async function resumeSystem() {
   if (!paused) return;
-  paused = false;
-  pauseBtn.textContent = "⏸️";
-  pauseBtn.setAttribute("aria-label", "Pause");
-  pauseBtn.classList.remove("paused");
+  setPausedUiState(false);
 
   if (lastUtterancePersona) {
     currentPersona = lastUtterancePersona;
