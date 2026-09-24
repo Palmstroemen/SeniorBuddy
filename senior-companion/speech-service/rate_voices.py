@@ -39,6 +39,9 @@ Steuerung NACH jeder Wiedergabe (Eingabe + Enter):
            direkt gefolgt von einem Kommentar, z.B. "2 klingt nasal"
   s        wie 1-5, aber fest auf 5 (gleichbedeutend mit dem
            Sofort-Abbruch waehrend der Wiedergabe, nur nachtraeglich)
+  t        neuen Demosatz eingeben (Enter danach) - wird ab jetzt fuer
+           alle weiteren Sprecher verwendet, spielt den aktuellen
+           Sprecher sofort mit dem neuen Satz ab
   r        aktuellen Sprecher nochmal abspielen
   n        weiter ohne Bewertung (bleibt beim naechsten Aufruf offen)
   p        zurueck zum vorherigen Sprecher
@@ -52,6 +55,7 @@ import shutil
 import subprocess
 import sys
 import termios
+import time
 import tty
 import wave
 from pathlib import Path
@@ -210,11 +214,12 @@ def main():
 
     tmp_path = SCRIPT_DIR / "_rate_voices_tmp.wav"
     i = find_start_index(speaker_ids, ratings, args.start_at)
+    demo_text = args.text  # per 't' waehrend des Laufs aenderbar, siehe unten
 
     print(f"{len(speaker_ids)} Sprecher in dieser Runde. Ergebnisse: {results_path.name}")
     print("Waehrend der Wiedergabe: s = sofort abbrechen + mit 5 bewerten (kein Enter noetig).")
-    print("Danach: 1-5 = Bewertung (+ optionaler Kommentar), s = wie 5, r = wiederholen, "
-          "n = weiter ohne Bewertung, p = zurueck, q = beenden.\n")
+    print("Danach: 1-5 = Bewertung (+ optionaler Kommentar), s = wie 5, t = Demosatz aendern, "
+          "r = wiederholen, n = weiter ohne Bewertung, p = zurueck, q = beenden.\n")
 
     try:
         while 0 <= i < len(speaker_ids):
@@ -223,14 +228,18 @@ def main():
             existing = ratings.get(str(sid))
             status = f" (bisher: {existing['rating']} - {existing.get('comment', '')})" if existing else ""
             print(f"[{i + 1}/{len(speaker_ids)}] Sprecher-ID {sid} ({corpus_key}){status}")
+            print(f"  Demosatz: {demo_text}")
 
             skipped = False
             if args.dry_run:
                 print("  (dry-run: keine Wiedergabe)")
             else:
                 buffer = io.BytesIO()
+                render_start = time.perf_counter()
                 with wave.open(buffer, "wb") as wav_file:
-                    voice.synthesize_wav(args.text, wav_file, syn_config=SynthesisConfig(speaker_id=sid))
+                    voice.synthesize_wav(demo_text, wav_file, syn_config=SynthesisConfig(speaker_id=sid))
+                render_seconds = time.perf_counter() - render_start
+                print(f"  Rendering: {render_seconds:.2f}s")
                 skipped = _play_wav_bytes(player_name, buffer.getvalue(), tmp_path)
 
             if skipped:
@@ -255,6 +264,11 @@ def main():
                 i = max(0, i - 1)
             elif key == "r":
                 continue  # gleiches i - naechster Schleifendurchlauf spielt erneut ab
+            elif key == "t":
+                new_text = input("  Neuer Demosatz: ").strip()
+                if new_text:
+                    demo_text = new_text
+                continue  # gleiches i - spielt sofort mit dem neuen Satz erneut ab
             elif key == "s":
                 ratings[str(sid)] = {
                     "rating": 5, "comment": cmd[1:].strip() or "per Skip (S) aussortiert",
@@ -269,7 +283,7 @@ def main():
                 save_ratings(results_path, ratings)
                 i += 1
             else:
-                print("  Unbekannter Befehl. 1-5, s, r, n, p oder q.")
+                print("  Unbekannter Befehl. 1-5, s, t, r, n, p oder q.")
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
