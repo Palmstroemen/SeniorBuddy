@@ -274,6 +274,22 @@ function renderSelectOptions(selectEl, values, currentValue) {
   )).join("");
 }
 
+// Reine Praesentations-Zuordnung (keine Server-Metadaten dafuer -
+// welches Geschlecht eine Stimme "klingt", ist Geschmackssache, nicht
+// aus der Audiodatei ableitbar). Pavoque zaehlt zu maennlich, obwohl
+// es Professor Wallners bisher einzige Stimme ist und sonst in KEINER
+// gefilterten Liste mehr waehlbar waere.
+const VOICE_GENDER_PREFIXES = {
+  weiblich: ["de_DE-kerstin", "de_DE-ramona"],
+  maennlich: ["de_DE-karlsson", "de_DE-thorsten", "de_DE-pavoque"],
+};
+
+function filterVoicesByGender(voices, gender) {
+  const prefixes = VOICE_GENDER_PREFIXES[gender];
+  if (!prefixes) return voices; // "neutral" -> ungefiltert, wie bisher
+  return voices.filter((v) => prefixes.some((p) => v.startsWith(p)));
+}
+
 // Anders als Modell/Stimme (einmal pro Sitzung geladen, siehe oben):
 // Sprecher-Metadaten haengen von der GERADE gewaehlten Stimme ab und
 // werden bei jeder Aenderung an voiceIdInput frisch abgefragt (siehe
@@ -322,6 +338,22 @@ async function refreshSpeakerOptions(currentSpeakerId) {
 }
 
 voiceIdInput.addEventListener("change", () => refreshSpeakerOptions(null));
+
+// Stimmen-Dropdown auf die neue Geschlechts-Kategorie einschraenken und
+// gleich die erste passende Stimme vorwaehlen (voiceIdInput ist
+// required - ein leeres Feld waere ein ungueltiges Formular). Faellt
+// auf die ungefilterte Liste zurueck, falls eine Kategorie (noch)
+// keine einzige passende Stimme hat - sonst bliebe das Dropdown
+// komplett leer und das Formular liesse sich nicht mehr absenden.
+genderInput.addEventListener("change", () => {
+  let filtered = filterVoicesByGender(availableVoices, genderInput.value);
+  if (filtered.length === 0) filtered = availableVoices;
+  // Sortiert, damit "erste Stimme" mit der optisch ersten Option im
+  // (alphabetisch sortierten) Dropdown uebereinstimmt, siehe renderSelectOptions().
+  const sorted = [...filtered].sort();
+  renderSelectOptions(voiceIdInput, sorted, sorted[0] || "");
+  refreshSpeakerOptions(null);
+});
 
 async function tryLogin(token) {
   try {
@@ -497,7 +529,7 @@ async function fillForm(persona, isCreate) {
   titleInput.value = persona.title || "";
   genderInput.value = persona.gender || "neutral";
   defaultAnredeInput.value = persona.default_anrede || "sie";
-  renderSelectOptions(voiceIdInput, availableVoices, persona.voice_id);
+  renderSelectOptions(voiceIdInput, filterVoicesByGender(availableVoices, genderInput.value), persona.voice_id);
   await refreshSpeakerOptions(persona.voice_speaker_id ?? null);
   systemPromptInput.value = persona.system_prompt || "";
 

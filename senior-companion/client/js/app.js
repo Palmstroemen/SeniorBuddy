@@ -585,22 +585,26 @@ function playPreparedAudio(blob) {
   });
 }
 
-function sendMessage() {
-  const text = textInput.value.trim();
-  if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
-  // Aktives Tippen+Senden ist ein eindeutiges "ich bin wieder da, JETZT"
-  // - hebt eine laufende Pause mit auf. Bewusst OHNE resumeSystem()s
-  // "Willkommen zurueck"-Aeusserung/Wiederholung des letzten Satzes:
-  // die Person tippt gerade aktiv etwas Neues, braucht keine
-  // Wiedereinstiegshilfe. Muss VOR dem eigentlichen Senden passieren -
-  // sonst wuerde die eintreffende Antwort vom weiterhin "paused"
-  // websocket-Handler stillschweigend verworfen (siehe dort).
+// Kernlogik des Sendens, unabhaengig davon, ob die Sprechblase gerade
+// erst angelegt wurde (manuelles Tippen, sendMessage() unten) oder
+// schon laenger als wachsende Diktier-Blase sichtbar war (Ablauf der
+// Grace Period, siehe commitPendingUtterance()) - beide Wege sollen
+// exakt dieselbe Unterbrechen-/Aufheben-/Senden-Logik durchlaufen,
+// unterscheiden sich nur darin, WOHER die Blase kommt.
+function sendText(text, bubble) {
+  // Aktives Senden ist ein eindeutiges "ich bin wieder da, JETZT" - hebt
+  // eine laufende Pause mit auf. Bewusst OHNE resumeSystem()s "Willkommen
+  // zurueck"-Aeusserung/Wiederholung des letzten Satzes: die Person hat
+  // gerade aktiv etwas Neues gesagt/getippt, braucht keine Wiedereinstiegs-
+  // hilfe. Muss VOR dem eigentlichen Senden passieren - sonst wuerde die
+  // eintreffende Antwort vom weiterhin "paused" websocket-Handler
+  // stillschweigend verworfen (siehe dort).
   if (paused) {
     setPausedUiState(false);
     preparedResumeAudio = null;
     startListening();
   }
-  addBubble(text, "user");
+  bubble.classList.remove("pending");
   const wasInterrupted = isCurrentlySpeaking();
   const interruptedPersona = currentPersona;
   // Unterbricht eine noch laufende Ansage sofort (auch mitten im Satz) -
@@ -615,6 +619,13 @@ function sendMessage() {
     playReaction(interruptedPersona, "interrupted");
   }
   socket.send(text);
+}
+
+function sendMessage() {
+  const text = textInput.value.trim();
+  if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
+  const bubble = addBubble(text, "user");
+  sendText(text, bubble);
   textInput.value = "";
 }
 
@@ -696,22 +707,110 @@ function reportSpeechPause() {
   }).catch(() => {});
 }
 
+// --- Grace-Period-Diktat --------------------------------------------
+//
+// Erkannter Sprachtext wandert NICHT ins Eingabefeld (ein normales
+// <textarea> kann keine mehrfarbige Schrift darstellen), sondern
+// direkt in eine wachsende "Entwurfs"-Sprechblase oben im Chat - jeder
+// weitere erkannte Fetzen haengt sich an, bis wirklich Stille herrscht
+// (Session-Notiz 2026-09-25). Das Eingabefeld bleibt so exklusiv fuers
+// manuelle Tippen frei. Bewusst eine FESTE Grace-Period-Dauer statt
+// einer adaptiven/statistischen (siehe speech_timing.py - reine
+// Rohdaten-Sammlung bisher, keine echte Kalibrierungsgrundlage) - das
+// ist die erste tatsaechliche Umsetzung der bisher nur besprochenen
+// Grace-Period-Idee, absichtlich einfach gehalten.
+const GRACE_PERIOD_MS = 2000;
+
+let pendingUtteranceBubble = null; // DOM-Element der wachsenden Entwurfs-Blase
+let pendingUtteranceText = "";     // bisher akkumulierter Text dieser Aeusserung
+let graceTimeoutId = null;         // sendet bei Ablauf tatsaechlich
+let graceProgressIntervalId = null; // fuellt sendBtn's Fortschrittsanzeige
+
+// Haengt einen neu erkannten (fertigen) Textfetzen an die laufende
+// Diktier-Blase an - legt sie beim allerersten Aufruf neu an. Zaehlt
+// selbst schon als "neues Wort" und verlaengert daher die Grace Period.
+function appendToPendingUtterance(text) {
+  if (!text) return;
+  if (!pendingUtteranceBubble) {
+    pendingUtteranceText = text;
+    pendingUtteranceBubble = addBubble(text, "user");
+    pendingUtteranceBubble.classList.add("pending");
+  } else {
+    pendingUtteranceText += " " + text;
+    pendingUtteranceBubble.textContent = pendingUtteranceText;
+  }
+  resetGraceTimer();
+}
+
+// Startet die Grace Period neu (bei jedem neuen Wort aufgerufen, ob
+// Zwischen- oder Endergebnis) - laesst die Fortschrittsanzeige am
+// Senden-Knopf von vorne beginnen und verschiebt den tatsaechlichen
+// Sendezeitpunkt.
+function resetGraceTimer() {
+  clearTimeout(graceTimeoutId);
+  clearInterval(graceProgressIntervalId);
+  const start = performance.now();
+  sendBtn.style.setProperty("--grace-progress", "0");
+  graceProgressIntervalId = setInterval(() => {
+    const fraction = Math.min(1, (performance.now() - start) / GRACE_PERIOD_MS);
+    sendBtn.style.setProperty("--grace-progress", String(fraction));
+  }, 80);
+  graceTimeoutId = setTimeout(commitPendingUtterance, GRACE_PERIOD_MS);
+}
+
+// Die Grace Period ist wirklich abgelaufen (kein neues Wort mehr) -
+// jetzt erst geht der akkumulierte Text tatsaechlich raus, exakt wie
+// ein manueller Klick auf "Senden" (siehe sendText()).
+function commitPendingUtterance() {
+  clearTimeout(graceTimeoutId);
+  clearInterval(graceProgressIntervalId);
+  sendBtn.style.setProperty("--grace-progress", "0");
+  if (!pendingUtteranceBubble) return;
+  const bubble = pendingUtteranceBubble;
+  const text = pendingUtteranceText;
+  pendingUtteranceBubble = null;
+  pendingUtteranceText = "";
+  sendBtn.classList.add("just-sent");
+  setTimeout(() => sendBtn.classList.remove("just-sent"), 300);
+  sendText(text, bubble);
+}
+
+// Fuer den Pause-Fall (siehe pauseSystem()): eine laufende Diktier-Blase
+// gilt als verworfen, nicht eingefroren - konsistent damit, dass eine
+// Pause sonst auch alles Laufende abraeumt (stopCurrentSpeech() etc.).
+// Nach dem Fortsetzen kann die Person einfach neu ansetzen.
+function cancelPendingUtterance() {
+  clearTimeout(graceTimeoutId);
+  clearInterval(graceProgressIntervalId);
+  sendBtn.style.setProperty("--grace-progress", "0");
+  if (pendingUtteranceBubble) pendingUtteranceBubble.remove();
+  pendingUtteranceBubble = null;
+  pendingUtteranceText = "";
+}
+
 if (SpeechRecognition) {
   recognizer = new SpeechRecognition();
   recognizer.lang = "de-AT";
-  recognizer.interimResults = false;
+  recognizer.interimResults = true;
   recognizer.continuous = true;
 
   recognizer.addEventListener("result", (event) => {
     if (paused || isCurrentlySpeaking()) return; // eigene Stimme nicht als Eingabe werten
-    const transcript = event.results[event.results.length - 1][0].transcript;
-    if (sttMode === "device") {
-      textInput.value = transcript;
-      sendMessage();
+    if (sttMode !== "device") return; // Server-Modus: siehe stopServerRecording()/speechstart unten
+    // Ab resultIndex iterieren (Standard-Muster der Web Speech API) -
+    // event.results kann bei aktivem interimResults mehrere neue
+    // Eintraege seit dem letzten Ereignis enthalten.
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      if (result.isFinal) {
+        appendToPendingUtterance(result[0].transcript.trim());
+      } else if (pendingUtteranceBubble) {
+        // Nur verlaengern, wenn schon eine Blase existiert - der
+        // allererste Text kommt erst mit dem ersten FINALEN Ergebnis,
+        // nicht schon mit einem noch unsicheren Zwischenergebnis.
+        resetGraceTimer();
+      }
     }
-    // Im Server-Modus dient dieses Ergebnis nur als Sprachaktivitaets-
-    // Signal - das eigentliche Transkript kommt ueber /api/stt via der
-    // "speechstart"/"speechend"-gesteuerten Aufnahme unten.
   });
   recognizer.addEventListener("speechstart", () => {
     // Nur melden, wenn weder pausiert noch die eigene Sprachausgabe
@@ -721,6 +820,12 @@ if (SpeechRecognition) {
     if (!paused && !isCurrentlySpeaking()) reportSpeechPause();
     if (sttMode === "server" && listening && !paused && !isCurrentlySpeaking() && !isServerRecording) {
       startServerRecording();
+    }
+    // Server-Modus hat keine Zwischenergebnisse (Whisper arbeitet nicht
+    // streamend) - "die Person redet wieder" ist hier der Ersatz dafuer,
+    // um eine laufende Grace Period rechtzeitig zu verlaengern.
+    if (sttMode === "server" && pendingUtteranceBubble) {
+      resetGraceTimer();
     }
   });
   recognizer.addEventListener("speechend", () => {
@@ -803,8 +908,7 @@ async function stopServerRecording() {
     const seconds = ((performance.now() - start) / 1000).toFixed(1);
     showLatencyBadge("🎙️", "Server", seconds);
     if (data.text) {
-      textInput.value = data.text;
-      sendMessage();
+      appendToPendingUtterance(data.text.trim());
     }
   } catch (err) {
     addBubble("Spracherkennung auf dem Server war nicht erreichbar.", "notice");
@@ -841,6 +945,7 @@ function pauseSystem() {
   pauseBtn.classList.remove("recording");
   stopCurrentSpeech();
   stopListening();
+  cancelPendingUtterance(); // eine laufende Diktier-Blase gilt als verworfen, nicht eingefroren
   lastSpeechEndTs = null; // Pausendauer selbst ist keine echte Sprechpause der Person
 
   // Waehrend der Pause schon mal das "Schoen, dass Sie/du wieder da

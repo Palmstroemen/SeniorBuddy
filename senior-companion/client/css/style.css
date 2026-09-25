@@ -357,6 +357,14 @@ body {
   border-bottom-right-radius: 4px;
 }
 
+/* Waechst noch als Diktier-Entwurf (Grace Period laeuft, siehe app.js's
+   appendToPendingUtterance()) - "noch nicht wirklich gesendet" optisch
+   erkennbar, verliert die Klasse sobald sendText() tatsaechlich sendet. */
+.bubble.user.pending {
+  opacity: 0.75;
+  border: 2px dashed var(--paper);
+}
+
 .bubble.assistant {
   align-self: flex-start;
   border-bottom-left-radius: 4px;
@@ -439,8 +447,29 @@ body {
 
 .send-btn {
   padding: 0 22px;
-  background: var(--sage);
   color: var(--paper);
+  /* Fortschrittsanzeige der Grace Period (siehe app.js's
+     resetGraceTimer()) - --grace-progress steht ausserhalb einer
+     laufenden Grace Period einfach auf 0, dann sieht der Knopf exakt
+     wie zuvor (durchgehend --sage) aus. */
+  background: linear-gradient(
+    to right,
+    var(--gold) calc(var(--grace-progress, 0) * 100%),
+    var(--sage) calc(var(--grace-progress, 0) * 100%)
+  );
+}
+
+/* Kurzer Aufblitz-Effekt genau im Moment des tatsaechlichen Sendens
+   (Ablauf der Grace Period, siehe commitPendingUtterance()) - bestaetigt
+   "jetzt wurde es an die Persona uebergeben". */
+.send-btn.just-sent {
+  animation: send-flash 300ms ease-out;
+}
+
+@keyframes send-flash {
+  0% { filter: brightness(1); transform: scale(1); }
+  40% { filter: brightness(1.6); transform: scale(1.05); }
+  100% { filter: brightness(1); transform: scale(1); }
 }
 
 /* --- Transparenz-Panel ---------------------------------------------*/
