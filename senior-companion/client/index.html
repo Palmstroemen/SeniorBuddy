@@ -70,7 +70,10 @@
 <!-- Transparenz-Panel: zeigt, was tatsächlich nach draußen geschickt wurde -->
 <div class="panel-overlay" id="panelOverlay" hidden>
   <section class="panel" role="dialog" aria-label="Was wurde geteilt?">
-    <h2>Was wurde heute nach draußen geschickt?</h2>
+    <h2>Einstellungen</h2>
+    <a class="panel-admin-link" href="/admin.html">Persona-Designer öffnen</a>
+
+    <h3>Was wurde heute nach draußen geschickt?</h3>
     <p class="panel-intro">Diese Liste zeigt jede Anfrage, die das System an das Internet geschickt hat.</p>
     <p class="panel-user" id="panelUser"></p>
     <ul id="transparencyList" class="transparency-list"></ul>
@@ -113,10 +116,6 @@
         <option value="5">5 Wörter</option>
       </select>
     </label>
-
-    <h3>Verwaltung</h3>
-    <p class="panel-intro">Personas anlegen, bearbeiten oder Einstellungen ändern.</p>
-    <a class="panel-admin-link" href="/admin.html">Persona-Designer öffnen</a>
 
     <button class="panel-close" id="panelClose">Schließen</button>
   </section>
