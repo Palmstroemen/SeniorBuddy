@@ -101,6 +101,7 @@ const lookaheadKpi = document.getElementById("lookaheadKpi");
 const textInput = document.getElementById("textInput");
 const sendBtn = document.getElementById("sendBtn");
 const pauseBtn = document.getElementById("pauseBtn");
+const micLevelMeter = document.getElementById("micLevelMeter");
 
 // Kein eigener Start-Bildschirm mehr (siehe docs/ARCHITECTURE.md-nahe
 // Session-Notiz) - der Leerlauf-Hinweis in BEIDEN Ansichten zeigt bis
@@ -848,12 +849,73 @@ if (SpeechRecognition) {
   });
 }
 
+// --- Mikrofon-Pegelanzeige -------------------------------------------
+//
+// Im Geraete-Modus greift die Web Speech API selbst (browser-intern)
+// aufs Mikrofon zu - unser Code bekommt dabei nie den rohen Pegel zu
+// sehen. Einzige Loesung: ein eigener, unabhaengiger getUserMedia-Aufruf
+// rein zur Visualisierung, parallel zur Spracherkennung. Mehrfacher
+// gleichzeitiger Mikrofonzugriff ist technisch unproblematisch; nicht
+// auf echter Hardware verifiziert ist, ob manche Browser dafuer ein
+// zweites Berechtigungs-Prompt zeigen statt die schon erteilte Erlaubnis
+// stillschweigend wiederzuverwenden (Session-Notiz 2026-09-26).
+let micAudioCtx = null;
+let micMonitorStream = null;
+let micAnalyser = null;
+let micLevelRafId = null;
+
+async function startMicLevelMeter() {
+  if (micMonitorStream) return; // laeuft schon
+  try {
+    micMonitorStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    return; // stummes Scheitern - STT selbst haengt nicht an dieser Anzeige
+  }
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  micAudioCtx = new AudioCtx();
+  const source = micAudioCtx.createMediaStreamSource(micMonitorStream);
+  micAnalyser = micAudioCtx.createAnalyser();
+  micAnalyser.fftSize = 512;
+  source.connect(micAnalyser); // NICHT an destination haengen - kein Echo
+  drawMicLevel();
+}
+
+function drawMicLevel() {
+  if (!micAnalyser) return;
+  const data = new Uint8Array(micAnalyser.fftSize);
+  micAnalyser.getByteTimeDomainData(data);
+  let sumSquares = 0;
+  for (let i = 0; i < data.length; i++) {
+    const centered = (data[i] - 128) / 128;
+    sumSquares += centered * centered;
+  }
+  const rms = Math.sqrt(sumSquares / data.length);
+  // Verstaerkungsfaktor grob geschaetzt (normale Sprache soll sichtbar
+  // ausschlagen) - nicht auf echter Hardware kalibriert, ggf. nach dem
+  // ersten echten Einsatz anpassen.
+  const level = Math.min(1, rms * 4);
+  micLevelMeter.style.setProperty("--mic-level", String(level));
+  micLevelRafId = requestAnimationFrame(drawMicLevel);
+}
+
+function stopMicLevelMeter() {
+  if (micLevelRafId) cancelAnimationFrame(micLevelRafId);
+  micLevelRafId = null;
+  micAnalyser = null;
+  if (micMonitorStream) micMonitorStream.getTracks().forEach((t) => t.stop());
+  micMonitorStream = null;
+  if (micAudioCtx) micAudioCtx.close().catch(() => {});
+  micAudioCtx = null;
+  micLevelMeter.style.setProperty("--mic-level", "0");
+}
+
 function startListening() {
   if (paused || listening) return;
   listening = true;
   if (recognizer) {
     try { recognizer.start(); } catch (err) { /* laeuft evtl. schon */ }
   }
+  startMicLevelMeter();
 }
 
 function stopListening() {
@@ -862,6 +924,7 @@ function stopListening() {
     try { recognizer.stop(); } catch (err) { /* laeuft evtl. schon nicht */ }
   }
   if (isServerRecording) stopServerRecording();
+  stopMicLevelMeter();
 }
 
 let mediaRecorder = null;

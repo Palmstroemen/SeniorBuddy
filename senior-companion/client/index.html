@@ -62,6 +62,11 @@
 
 <footer class="composer">
   <button class="pause-btn" id="pauseBtn" aria-label="Pause">⏸️</button>
+  <!-- Mikrofon-Pegelanzeige (Session-Notiz 2026-09-26): zeigt schon
+       beim allerersten Wort, ob das Mikrofon ueberhaupt etwas aufnimmt -
+       liegt bewusst ausserhalb von chatArea/avatarStage, damit sie in
+       BEIDEN uiMode-Zustaenden sichtbar bleibt. -->
+  <div class="mic-level-meter" id="micLevelMeter" aria-hidden="true"></div>
   <textarea id="textInput" class="text-input" rows="1"
             placeholder="Schreib etwas …" aria-label="Nachricht eingeben"></textarea>
   <button class="send-btn" id="sendBtn" aria-label="Senden">Senden</button>

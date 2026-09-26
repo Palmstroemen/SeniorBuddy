@@ -445,6 +445,28 @@ body {
   color: var(--ink-soft);
 }
 
+/* Mikrofon-Pegelanzeige - --mic-level wird laufend per JS gesetzt
+   (siehe app.js's drawMicLevel()), 0 ausserhalb aktiven Zuhoerens. */
+.mic-level-meter {
+  width: 10px;
+  min-height: 52px;
+  border-radius: var(--radius);
+  background: var(--sage-soft);
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.mic-level-meter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--mic-level, 0) * 100%);
+  background: var(--gold);
+  transition: height 60ms linear;
+}
+
 .send-btn {
   padding: 0 22px;
   color: var(--paper);
