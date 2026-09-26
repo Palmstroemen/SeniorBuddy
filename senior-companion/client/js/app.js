@@ -840,7 +840,13 @@ if (SpeechRecognition) {
       try { recognizer.start(); } catch (err) { /* laeuft evtl. schon */ }
     }
   });
-  recognizer.addEventListener("error", () => {
+  recognizer.addEventListener("error", (event) => {
+    // Bisher schluckten wir jeden Fehlergrund stillschweigend - ohne
+    // sichtbaren Hinweis liess sich z.B. "network" (Spracherkennung
+    // braucht bei den meisten Browsern eine Cloud-Verbindung zu
+    // Google) nicht von "no-speech" (voellig normal) unterscheiden
+    // (Session-Notiz 2026-09-26).
+    console.warn("Spracherkennung-Fehler:", event.error);
     // Manche Browser feuern bei z.B. "no-speech" "error" statt "end" -
     // trotzdem weiter zuhoeren, statt endgueltig stillzustehen.
     if (listening && !paused) {
