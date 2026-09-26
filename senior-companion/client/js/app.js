@@ -864,6 +864,23 @@ let micMonitorStream = null;
 let micAnalyser = null;
 let micLevelRafId = null;
 
+// startListening() (und damit startMicLevelMeter()) laeuft schon beim
+// Laden der Seite automatisch los, ganz ohne vorherigen Klick/Tipp -
+// Chrome-artige Browser erzwingen dann aber, dass ein frisch erzeugter
+// AudioContext im Zustand "suspended" startet (Autoplay-Schutz), bis
+// irgendeine echte Nutzer-Interaktion auf der Seite stattfand. Ohne
+// diesen Kniff bliebe die Pegelanzeige bei reiner Sprachbedienung (ganz
+// ohne Klick) fuer immer flach, obwohl das Mikrofon laengst etwas
+// aufnimmt (Session-Notiz 2026-09-26).
+function resumeMicAudioCtxIfSuspended() {
+  if (micAudioCtx && micAudioCtx.state === "suspended") {
+    micAudioCtx.resume().catch(() => {});
+  }
+}
+["click", "touchstart", "keydown"].forEach((evt) => {
+  document.addEventListener(evt, resumeMicAudioCtxIfSuspended, { passive: true });
+});
+
 async function startMicLevelMeter() {
   if (micMonitorStream) return; // laeuft schon
   try {
@@ -873,6 +890,7 @@ async function startMicLevelMeter() {
   }
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   micAudioCtx = new AudioCtx();
+  resumeMicAudioCtxIfSuspended(); // greift, falls schon vorher irgendwo geklickt wurde
   const source = micAudioCtx.createMediaStreamSource(micMonitorStream);
   micAnalyser = micAudioCtx.createAnalyser();
   micAnalyser.fftSize = 512;
