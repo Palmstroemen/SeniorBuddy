@@ -813,43 +813,31 @@ if (SpeechRecognition) {
       }
     }
   });
-  recognizer.addEventListener("speechstart", () => {
-    // Nur melden, wenn weder pausiert noch die eigene Sprachausgabe
-    // gerade laeuft - sonst wuerde die Zeit, die das System selbst
-    // geredet/pausiert hat, faelschlich als "Sprechpause der Person"
-    // gezaehlt (siehe lastSpeechEndTs-Reset bei speakingPersona/pauseSystem()).
-    if (!paused && !isCurrentlySpeaking()) reportSpeechPause();
-    if (sttMode === "server" && listening && !paused && !isCurrentlySpeaking() && !isServerRecording) {
-      startServerRecording();
-    }
-    // Server-Modus hat keine Zwischenergebnisse (Whisper arbeitet nicht
-    // streamend) - "die Person redet wieder" ist hier der Ersatz dafuer,
-    // um eine laufende Grace Period rechtzeitig zu verlaengern.
-    if (sttMode === "server" && pendingUtteranceBubble) {
-      resetGraceTimer();
-    }
-  });
-  recognizer.addEventListener("speechend", () => {
-    lastSpeechEndTs = Date.now();
-    if (sttMode === "server" && isServerRecording) stopServerRecording();
-  });
+  // speechstart/speechend gibt es hier bewusst NICHT mehr - deren
+  // gesamte Aufgabe (Server-Aufnahme starten/stoppen, reportSpeechPause(),
+  // Grace-Period verlaengern) uebernimmt jetzt die eigene, browser-
+  // unabhaengige Pegel-VAD weiter unten (updateVad()/onVadSpeechStart()/
+  // onVadSpeechEnd()) - auf allen drei real getesteten Browsern
+  // (Firefox: API fehlt komplett; Chromium/Brave: API vorhanden, aber
+  // jeder Versuch scheitert sofort mit "network") war diese Kopplung an
+  // recognizer schlicht nie funktionsfaehig (Session-Notiz 2026-09-26).
   recognizer.addEventListener("end", () => {
-    // Nach jeder Aeusserung (oder Stille-Timeout) neu starten, solange
-    // wir weiter zuhoeren sollen - das IST das Dauer-Zuhoeren.
-    if (listening && !paused) {
+    // Neustart nur noch im Geraete-Modus versuchen - im Server-Modus
+    // brauchen wir recognizer fuer nichts mehr, ein Neustart waere
+    // reine Verschwendung.
+    if (sttMode === "device" && listening && !paused) {
       try { recognizer.start(); } catch (err) { /* laeuft evtl. schon */ }
     }
   });
   recognizer.addEventListener("error", (event) => {
-    // Bisher schluckten wir jeden Fehlergrund stillschweigend - ohne
-    // sichtbaren Hinweis liess sich z.B. "network" (Spracherkennung
-    // braucht bei den meisten Browsern eine Cloud-Verbindung zu
-    // Google) nicht von "no-speech" (voellig normal) unterscheiden
-    // (Session-Notiz 2026-09-26).
+    // Bisher schluckten wir jeden Fehlergrund UND starteten unabhaengig
+    // vom sttMode sofort neu - auf Chromium/Brave ergab das eine enge
+    // Endlosschleife (staendiges "network"), die die Konsole binnen
+    // Minuten mit tausenden Meldungen geflutet hat (Session-Notiz
+    // 2026-09-26). Jetzt: Grund sichtbar loggen, Neustart nur noch im
+    // Geraete-Modus versuchen.
     console.warn("Spracherkennung-Fehler:", event.error);
-    // Manche Browser feuern bei z.B. "no-speech" "error" statt "end" -
-    // trotzdem weiter zuhoeren, statt endgueltig stillzustehen.
-    if (listening && !paused) {
+    if (sttMode === "device" && listening && !paused) {
       try { recognizer.start(); } catch (err) { /* laeuft evtl. schon */ }
     }
   });
@@ -892,7 +880,12 @@ async function startMicLevelMeter() {
   try {
     micMonitorStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
-    return; // stummes Scheitern - STT selbst haengt nicht an dieser Anzeige
+    // War bisher ein rein kosmetisches Scheitern (nur die Anzeige blieb
+    // flach) - seit die eigene VAD/Server-Aufnahme denselben Strom
+    // mitbenutzt, ist das jetzt auch funktional relevant, verdient also
+    // eine echte Meldung (Session-Notiz 2026-09-26).
+    addBubble("Mikrofonzugriff wurde nicht erlaubt.", "notice");
+    return;
   }
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   micAudioCtx = new AudioCtx();
@@ -919,13 +912,88 @@ function drawMicLevel() {
   // ersten echten Einsatz anpassen.
   const level = Math.min(1, rms * 4);
   micLevelMeter.style.setProperty("--mic-level", String(level));
+  updateVad(level, performance.now());
   micLevelRafId = requestAnimationFrame(drawMicLevel);
+}
+
+// --- Eigene, browserunabhaengige Sprachaktivitaetserkennung (VAD) ---
+//
+// Sowohl Firefox (API fehlt komplett) als auch Chromium/Brave (API da,
+// scheitert aber sofort mit "network") koennen recognizer.speechstart/
+// speechend nicht zuverlaessig liefern (Session-Notiz 2026-09-26) - der
+// Server-Modus (unsere eigene Whisper-Erkennung) braucht also eine
+// eigene Erkennung, WANN jemand redet. Baut direkt auf dem Pegel auf,
+// den drawMicLevel() ohnehin schon laufend berechnet.
+const VAD_LEVEL_THRESHOLD = 0.15; // Pegel-Grenzwert (0..1, gleiche
+                                   // Skala wie --mic-level) - grob
+                                   // geschaetzt, nicht auf echter
+                                   // Hardware kalibriert.
+const VAD_START_MS = 200; // so lange muss der Pegel ueber der Schwelle
+                           // bleiben, bevor "Sprechbeginn" zaehlt -
+                           // daempft kurze Klick-Spitzen etwas (loest
+                           // das Problem aber nicht vollstaendig, siehe
+                           // Notiz zu Tastaturgeraeuschen - bewusst
+                           // vertagt).
+const VAD_END_MS = 700; // so lange muss der Pegel darunter bleiben,
+                         // bevor "Sprechende" zaehlt (Endpointing fuer
+                         // den aktuellen Aufnahme-Schnipsel - NICHT zu
+                         // verwechseln mit GRACE_PERIOD_MS, das erst
+                         // NACH erkanntem Text die Weitergabe an die
+                         // Persona verzoegert).
+let vadSpeaking = false;
+let vadAboveSinceTs = null;
+let vadBelowSinceTs = null;
+
+function updateVad(level, now) {
+  if (paused || isCurrentlySpeaking()) {
+    vadAboveSinceTs = null;
+    vadBelowSinceTs = null;
+    return;
+  }
+  if (level >= VAD_LEVEL_THRESHOLD) {
+    vadBelowSinceTs = null;
+    if (!vadSpeaking) {
+      if (vadAboveSinceTs === null) vadAboveSinceTs = now;
+      else if (now - vadAboveSinceTs >= VAD_START_MS) {
+        vadSpeaking = true;
+        onVadSpeechStart();
+      }
+    }
+  } else {
+    vadAboveSinceTs = null;
+    if (vadSpeaking) {
+      if (vadBelowSinceTs === null) vadBelowSinceTs = now;
+      else if (now - vadBelowSinceTs >= VAD_END_MS) {
+        vadSpeaking = false;
+        onVadSpeechEnd();
+      }
+    }
+  }
+}
+
+function onVadSpeechStart() {
+  reportSpeechPause(); // browser-/modusunabhaengige Rohdaten-Sammlung
+                        // (server/speech_timing.py) - bisher an
+                        // recognizer.speechstart gehaengt, funktioniert
+                        // dadurch jetzt erstmals auch auf Firefox.
+  if (sttMode === "server" && listening && !isServerRecording) {
+    startServerRecording();
+  }
+  if (pendingUtteranceBubble) resetGraceTimer();
+}
+
+function onVadSpeechEnd() {
+  lastSpeechEndTs = Date.now();
+  if (sttMode === "server" && isServerRecording) stopServerRecording();
 }
 
 function stopMicLevelMeter() {
   if (micLevelRafId) cancelAnimationFrame(micLevelRafId);
   micLevelRafId = null;
   micAnalyser = null;
+  vadSpeaking = false;
+  vadAboveSinceTs = null;
+  vadBelowSinceTs = null;
   if (micMonitorStream) micMonitorStream.getTracks().forEach((t) => t.stop());
   micMonitorStream = null;
   if (micAudioCtx) micAudioCtx.close().catch(() => {});
@@ -936,7 +1004,9 @@ function stopMicLevelMeter() {
 function startListening() {
   if (paused || listening) return;
   listening = true;
-  if (recognizer) {
+  // recognizer nur noch im Geraete-Modus ueberhaupt versuchen - im
+  // Server-Modus brauchen wir ihn fuer nichts mehr (siehe eigene VAD).
+  if (recognizer && sttMode === "device") {
     try { recognizer.start(); } catch (err) { /* laeuft evtl. schon */ }
   }
   startMicLevelMeter();
@@ -952,19 +1022,18 @@ function stopListening() {
 }
 
 let mediaRecorder = null;
-let mediaStream = null;
 let recordedChunks = [];
 let isServerRecording = false;
 
-async function startServerRecording() {
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (err) {
-    addBubble("Mikrofonzugriff wurde nicht erlaubt.", "notice");
-    return;
-  }
+// Nutzt den langlebigen micMonitorStream mit (siehe startMicLevelMeter()),
+// statt einen eigenen, kurzlebigen Strom pro Aeusserung zu oeffnen - kein
+// zweiter Berechtigungs-Kniff noetig, ein MediaStreamTrack kann problemlos
+// von AnalyserNode UND MediaRecorder gleichzeitig gelesen werden (Session-
+// Notiz 2026-09-26).
+function startServerRecording() {
+  if (!micMonitorStream) return; // Mikrofonzugriff nie erlaubt/verfuegbar
   recordedChunks = [];
-  mediaRecorder = new MediaRecorder(mediaStream);
+  mediaRecorder = new MediaRecorder(micMonitorStream);
   mediaRecorder.addEventListener("dataavailable", (e) => {
     if (e.data.size > 0) recordedChunks.push(e.data);
   });
@@ -982,7 +1051,8 @@ async function stopServerRecording() {
   });
   mediaRecorder.stop();
   await stopped;
-  mediaStream.getTracks().forEach((track) => track.stop());
+  // Strom selbst NICHT stoppen - gehoert dem Pegelmesser/der VAD, bleibt
+  // fuer die naechste Aeusserung offen (siehe stopMicLevelMeter()).
 
   const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || "audio/webm" });
   const start = performance.now();
