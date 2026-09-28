@@ -910,21 +910,34 @@ async function startMicLevelMeter() {
 
 function drawMicLevel() {
   if (!micAnalyser) return;
-  const data = new Uint8Array(micAnalyser.fftSize);
-  micAnalyser.getByteTimeDomainData(data);
-  let sumSquares = 0;
-  for (let i = 0; i < data.length; i++) {
-    const centered = (data[i] - 128) / 128;
-    sumSquares += centered * centered;
+  // Alles innerhalb try/finally: ein Fehler irgendwo in der VAD-/
+  // Aufnahme-Kette (updateVad() -> onVadSpeechStart() ->
+  // startServerRecording() etc.) durfte bisher den kompletten
+  // requestAnimationFrame-Lauf lautlos fuer immer stoppen, weil die
+  // Neuplanung ganz am Ende stand - genau das hat vermutlich zum
+  // beobachteten "hoert komplett auf zu reagieren" gefuehrt (Session-
+  // Notiz 2026-09-28). Die Schleife muss IMMER weiterlaufen, ein
+  // einzelner kaputter Frame darf nicht das Ende der Erkennung sein.
+  try {
+    const data = new Uint8Array(micAnalyser.fftSize);
+    micAnalyser.getByteTimeDomainData(data);
+    let sumSquares = 0;
+    for (let i = 0; i < data.length; i++) {
+      const centered = (data[i] - 128) / 128;
+      sumSquares += centered * centered;
+    }
+    const rms = Math.sqrt(sumSquares / data.length);
+    // Verstaerkungsfaktor grob geschaetzt (normale Sprache soll sichtbar
+    // ausschlagen) - nicht auf echter Hardware kalibriert, ggf. nach dem
+    // ersten echten Einsatz anpassen.
+    const level = Math.min(1, rms * 4);
+    micLevelMeter.style.setProperty("--mic-level", String(level));
+    updateVad(level, performance.now());
+  } catch (err) {
+    console.warn("Fehler in der Pegel-/VAD-Verarbeitung:", err);
+  } finally {
+    micLevelRafId = requestAnimationFrame(drawMicLevel);
   }
-  const rms = Math.sqrt(sumSquares / data.length);
-  // Verstaerkungsfaktor grob geschaetzt (normale Sprache soll sichtbar
-  // ausschlagen) - nicht auf echter Hardware kalibriert, ggf. nach dem
-  // ersten echten Einsatz anpassen.
-  const level = Math.min(1, rms * 4);
-  micLevelMeter.style.setProperty("--mic-level", String(level));
-  updateVad(level, performance.now());
-  micLevelRafId = requestAnimationFrame(drawMicLevel);
 }
 
 // --- Eigene, browserunabhaengige Sprachaktivitaetserkennung (VAD) ---
@@ -1033,7 +1046,6 @@ function stopListening() {
 }
 
 let mediaRecorder = null;
-let recordedChunks = [];
 let isServerRecording = false;
 
 // Nutzt den langlebigen micMonitorStream mit (siehe startMicLevelMeter()),
@@ -1041,33 +1053,57 @@ let isServerRecording = false;
 // zweiter Berechtigungs-Kniff noetig, ein MediaStreamTrack kann problemlos
 // von AnalyserNode UND MediaRecorder gleichzeitig gelesen werden (Session-
 // Notiz 2026-09-26).
+//
+// isServerRecording bleibt jetzt ueber die GESAMTE Aufnehmen-Stoppen-
+// Hochladen-Kette hinweg true (nicht nur waehrend MediaRecorder aktiv
+// ist) - verhindert, dass eine neue Aeusserung startet, waehrend die
+// vorherige noch beim Server-Roundtrip haengt. Ohne das ueberschrieben
+// sich zwei ueberlappende Aufnahmen gegenseitig ihre Audiodaten (kurze
+// Sprechpause, sofort weitergeredet, waehrend Whisper noch am vorigen
+// Fragment arbeitet) - beobachtet als "nur ein Teil der Spracheingabe
+// wurde aufgegriffen, danach hat das System komplett aufgehoert zu
+// reagieren" (Session-Notiz 2026-09-28). Wer waehrend dieser kurzen
+// Sperre weiterredet, wird schlicht nicht aufgenommen (kein Datenverlust
+// durch Ueberschreiben mehr, aber auch keine Warteschlange - bewusst
+// einfach gehalten fuers Erste).
 function startServerRecording() {
-  if (!micMonitorStream) return; // Mikrofonzugriff nie erlaubt/verfuegbar
-  recordedChunks = [];
-  mediaRecorder = new MediaRecorder(micMonitorStream);
-  mediaRecorder.addEventListener("dataavailable", (e) => {
-    if (e.data.size > 0) recordedChunks.push(e.data);
-  });
-  mediaRecorder.start();
+  if (!micMonitorStream || isServerRecording) return;
   isServerRecording = true;
   pauseBtn.classList.add("recording");
+  const recorder = new MediaRecorder(micMonitorStream);
+  const chunks = []; // lokal pro Aufnahme, NICHT mehr geteilt - verhindert
+                      // dass eine ueberlappende zweite Aufnahme die Daten
+                      // der ersten mit ueberschreibt.
+  recorder.addEventListener("dataavailable", (e) => {
+    if (e.data.size > 0) chunks.push(e.data);
+  });
+  recorder._chunks = chunks;
+  recorder.start();
+  mediaRecorder = recorder;
 }
 
 async function stopServerRecording() {
-  isServerRecording = false;
+  // Eigene Instanz-Referenz sichern, statt spaeter ueber die
+  // moeglicherweise inzwischen neu zugewiesene mediaRecorder-Variable zu
+  // gehen (siehe startServerRecording()'s Ueberlappungs-Schutz).
+  const recorder = mediaRecorder;
   pauseBtn.classList.remove("recording");
-
-  const stopped = new Promise((resolve) => {
-    mediaRecorder.addEventListener("stop", resolve, { once: true });
-  });
-  mediaRecorder.stop();
-  await stopped;
-  // Strom selbst NICHT stoppen - gehoert dem Pegelmesser/der VAD, bleibt
-  // fuer die naechste Aeusserung offen (siehe stopMicLevelMeter()).
-
-  const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || "audio/webm" });
-  const start = performance.now();
   try {
+    if (!recorder) return;
+    if (recorder.state !== "inactive") {
+      const stopped = new Promise((resolve) => {
+        recorder.addEventListener("stop", resolve, { once: true });
+      });
+      recorder.stop();
+      await stopped;
+    }
+    // Strom selbst NICHT stoppen - gehoert dem Pegelmesser/der VAD, bleibt
+    // fuer die naechste Aeusserung offen (siehe stopMicLevelMeter()).
+
+    const chunks = recorder._chunks || [];
+    if (chunks.length === 0) return;
+    const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+    const start = performance.now();
     const form = new FormData();
     form.append("audio", blob, "aufnahme.webm");
     const res = await fetch("/api/stt", { method: "POST", body: form });
@@ -1080,6 +1116,11 @@ async function stopServerRecording() {
     }
   } catch (err) {
     addBubble("Spracherkennung auf dem Server war nicht erreichbar.", "notice");
+  } finally {
+    // IMMER freigeben, egal was schiefgegangen ist - sonst haengt das
+    // System nach einem einzelnen Fehler dauerhaft fest, ohne je wieder
+    // eine neue Aufnahme zu starten (Session-Notiz 2026-09-28).
+    isServerRecording = false;
   }
 }
 
