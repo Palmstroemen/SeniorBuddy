@@ -60,6 +60,13 @@
   <p class="stage-hint hint-loading" id="stageHint">Einen Moment, wir bereiten alles vor …</p>
 </main>
 
+<!-- Live-Untertitel (Session-Notiz 2026-09-28): spiegelt den erkannten
+     Text der wachsenden Diktier-Sprechblase, aber ausserhalb von
+     chatArea/avatarStage - bisher gab es in der Standard-Avatar-Ansicht
+     KEINE sichtbare Rueckmeldung, was das System ueberhaupt verstanden
+     hat, weder von eigener Sprache noch von Umgebungsgeraeuschen. -->
+<div class="live-caption" id="liveCaption" hidden aria-live="polite"></div>
+
 <footer class="composer">
   <button class="pause-btn" id="pauseBtn" aria-label="Pause">⏸️</button>
   <!-- Mikrofon-Pegelanzeige (Session-Notiz 2026-09-26): zeigt schon

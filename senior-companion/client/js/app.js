@@ -102,6 +102,7 @@ const textInput = document.getElementById("textInput");
 const sendBtn = document.getElementById("sendBtn");
 const pauseBtn = document.getElementById("pauseBtn");
 const micLevelMeter = document.getElementById("micLevelMeter");
+const liveCaption = document.getElementById("liveCaption");
 
 // Kein eigener Start-Bildschirm mehr (siehe docs/ARCHITECTURE.md-nahe
 // Session-Notiz) - der Leerlauf-Hinweis in BEIDEN Ansichten zeigt bis
@@ -740,6 +741,12 @@ function appendToPendingUtterance(text) {
     pendingUtteranceText += " " + text;
     pendingUtteranceBubble.textContent = pendingUtteranceText;
   }
+  // Spiegelt denselben Text ausserhalb von chatArea (siehe liveCaption-
+  // Deklaration oben) - die Blase selbst ist in der Avatar-Ansicht
+  // (Standardansicht) unsichtbar, das hier ist es nicht (Session-Notiz
+  // 2026-09-28).
+  liveCaption.textContent = `🎙️ ${pendingUtteranceText}`;
+  liveCaption.hidden = false;
   resetGraceTimer();
 }
 
@@ -766,6 +773,8 @@ function commitPendingUtterance() {
   clearTimeout(graceTimeoutId);
   clearInterval(graceProgressIntervalId);
   sendBtn.style.setProperty("--grace-progress", "0");
+  liveCaption.hidden = true;
+  liveCaption.textContent = "";
   if (!pendingUtteranceBubble) return;
   const bubble = pendingUtteranceBubble;
   const text = pendingUtteranceText;
@@ -784,6 +793,8 @@ function cancelPendingUtterance() {
   clearTimeout(graceTimeoutId);
   clearInterval(graceProgressIntervalId);
   sendBtn.style.setProperty("--grace-progress", "0");
+  liveCaption.hidden = true;
+  liveCaption.textContent = "";
   if (pendingUtteranceBubble) pendingUtteranceBubble.remove();
   pendingUtteranceBubble = null;
   pendingUtteranceText = "";
