@@ -259,7 +259,14 @@ async def trigger_display(user_id: str, body: DisplayCommand):
 
 @app.post("/api/stt")
 async def speech_to_text(audio: UploadFile):
+    # Zeitmessung fuer den GESAMTEN Weg (inkl. Netzwerk zum Sprachdienst) -
+    # ergaenzt speech-service/main.py's eigenes Timing der reinen
+    # Erkennung selbst, damit sich Netzwerk-/Warteschlangenanteil von der
+    # eigentlichen Whisper-Verarbeitung unterscheiden laesst (Session-
+    # Notiz 2026-09-29).
+    start = time.monotonic()
     text = await speech_client.transcribe(await audio.read(), audio.filename or "aufnahme.webm")
+    log.info("STT-Roundtrip (Server<->Sprachdienst): %.2fs Text=%r", time.monotonic() - start, text)
     return {"text": text}
 
 

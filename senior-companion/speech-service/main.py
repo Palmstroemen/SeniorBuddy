@@ -14,6 +14,7 @@ import io
 import json
 import logging
 import tempfile
+import time
 import wave
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -127,8 +128,21 @@ async def transcribe(audio: UploadFile):
         tmp.write(data)
         tmp.flush()
         model = _get_whisper_model()
-        segments, _ = model.transcribe(tmp.name, language="de")
+        start = time.monotonic()
+        # info.duration kommt von faster-whisper selbst (bereits per
+        # Audio-Header ermittelt, kein zusaetzliches Decodieren noetig) -
+        # zusammen mit der eigenen Zeitmessung ergibt das ein klares Bild,
+        # WIE VIEL Audio hereinkam und WIE LANGE das Erkennen gedauert hat
+        # (Session-Notiz 2026-09-29: "wie lange benoetigen wir fuer die
+        # Spracherkennung" + Verdacht auf verschluckte/verstuemmelte
+        # Fragmente).
+        segments, info = model.transcribe(tmp.name, language="de")
         text = " ".join(segment.text.strip() for segment in segments).strip()
+        elapsed = time.monotonic() - start
+    log.info(
+        "STT: Audio=%.2fs (%d Bytes) Erkennung=%.2fs Text=%r",
+        info.duration, len(data), elapsed, text,
+    )
     return {"text": text}
 
 
