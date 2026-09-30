@@ -1010,7 +1010,13 @@ function onVadSpeechStart() {
                         // (server/speech_timing.py) - bisher an
                         // recognizer.speechstart gehaengt, funktioniert
                         // dadurch jetzt erstmals auch auf Firefox.
-  if (sttMode === "server" && listening && !isServerRecording) {
+  // KEINE isServerRecording-Bremse mehr (siehe startServerRecording()) -
+  // die Zustandsmaschine hier laesst ohnehin immer nur EIN Start/Ende-
+  // Paar gleichzeitig offen (vadSpeaking muss erst wieder false werden,
+  // bevor dieser Zweig ueberhaupt erneut feuert), eine neue Aeusserung
+  // darf also jederzeit eine neue Aufnahme anstossen, auch waehrend die
+  // vorherige noch hochlaedt.
+  if (sttMode === "server" && listening) {
     startServerRecording();
   }
   if (pendingUtteranceBubble) resetGraceTimer();
@@ -1018,7 +1024,7 @@ function onVadSpeechStart() {
 
 function onVadSpeechEnd() {
   lastSpeechEndTs = Date.now();
-  if (sttMode === "server" && isServerRecording) stopServerRecording();
+  if (sttMode === "server") stopServerRecording();
 }
 
 function stopMicLevelMeter() {
@@ -1051,12 +1057,15 @@ function stopListening() {
   if (recognizer) {
     try { recognizer.stop(); } catch (err) { /* laeuft evtl. schon nicht */ }
   }
-  if (isServerRecording) stopServerRecording();
+  stopServerRecording(); // no-op, falls gerade nichts aufnimmt
   stopMicLevelMeter();
 }
 
 let mediaRecorder = null;
-let isServerRecording = false;
+// Anzahl gerade laufender (aufnehmender ODER noch hochladender)
+// Aufnahmen - treibt nur noch die "recording"-Optik am Pause-Button,
+// blockiert aber KEINE neue Aufnahme mehr (siehe startServerRecording()).
+let activeRecordings = 0;
 
 // Nutzt den langlebigen micMonitorStream mit (siehe startMicLevelMeter()),
 // statt einen eigenen, kurzlebigen Strom pro Aeusserung zu oeffnen - kein
@@ -1064,24 +1073,28 @@ let isServerRecording = false;
 // von AnalyserNode UND MediaRecorder gleichzeitig gelesen werden (Session-
 // Notiz 2026-09-26).
 //
-// isServerRecording bleibt jetzt ueber die GESAMTE Aufnehmen-Stoppen-
-// Hochladen-Kette hinweg true (nicht nur waehrend MediaRecorder aktiv
-// ist) - verhindert, dass eine neue Aeusserung startet, waehrend die
-// vorherige noch beim Server-Roundtrip haengt. Ohne das ueberschrieben
-// sich zwei ueberlappende Aufnahmen gegenseitig ihre Audiodaten (kurze
-// Sprechpause, sofort weitergeredet, waehrend Whisper noch am vorigen
-// Fragment arbeitet) - beobachtet als "nur ein Teil der Spracheingabe
-// wurde aufgegriffen, danach hat das System komplett aufgehoert zu
-// reagieren" (Session-Notiz 2026-09-28). Wer waehrend dieser kurzen
-// Sperre weiterredet, wird schlicht nicht aufgenommen (kein Datenverlust
-// durch Ueberschreiben mehr, aber auch keine Warteschlange - bewusst
-// einfach gehalten fuers Erste).
+// Frueher blockierte hier ein isServerRecording-Flag jede neue Aufnahme,
+// solange die vorherige noch beim Server-Roundtrip haengte (gedacht, um
+// zwei ueberlappende Aufnahmen vor gegenseitigem Ueberschreiben ihrer
+// Audiodaten zu schuetzen). Live-Test zeigte aber: das Sperrfenster
+// (bis zu 2-2,5s bei der grosszuegigeren Stille-Schwelle) verschluckte
+// dabei ganze, neu begonnene Saetze lautlos - der Fortschrittsbalken am
+// Senden-Knopf setzte sichtbar neu an, aber es wurde schlicht nichts
+// aufgenommen (Session-Notiz 2026-09-30). Die Sperre war fuer die
+// Korrektheit gar nicht mehr noetig: Jede Aufnahme hat inzwischen ihre
+// EIGENEN, lokal gescopten Audio-Daten (chunks/recorder-Referenz), und
+// die VAD-Zustandsmaschine laesst ohnehin nur EIN Start/Ende-Paar
+// gleichzeitig offen (vadSpeaking muss erst wieder false werden, bevor
+// onVadSpeechStart() erneut feuert) - Ueberlappung kann also nur
+// zwischen einer noch hochladenden ALTEN und einer neu gestarteten
+// Aufnahme auftreten, und die sind durch die lokale Kapselung bereits
+// sauber getrennt.
 function startServerRecording() {
-  if (!micMonitorStream || isServerRecording) return;
-  isServerRecording = true;
+  if (!micMonitorStream) return;
+  activeRecordings++;
   pauseBtn.classList.add("recording");
   const recorder = new MediaRecorder(micMonitorStream);
-  const chunks = []; // lokal pro Aufnahme, NICHT mehr geteilt - verhindert
+  const chunks = []; // lokal pro Aufnahme, NICHT geteilt - verhindert,
                       // dass eine ueberlappende zweite Aufnahme die Daten
                       // der ersten mit ueberschreibt.
   recorder.addEventListener("dataavailable", (e) => {
@@ -1095,9 +1108,10 @@ function startServerRecording() {
 async function stopServerRecording() {
   // Eigene Instanz-Referenz sichern, statt spaeter ueber die
   // moeglicherweise inzwischen neu zugewiesene mediaRecorder-Variable zu
-  // gehen (siehe startServerRecording()'s Ueberlappungs-Schutz).
+  // gehen - garantiert korrekt, weil die VAD-Zustandsmaschine
+  // onVadSpeechEnd() (und damit diesen Aufruf) immer VOR dem naechsten
+  // onVadSpeechStart() (und damit einer moeglichen Neuzuweisung) feuert.
   const recorder = mediaRecorder;
-  pauseBtn.classList.remove("recording");
   try {
     if (!recorder) return;
     if (recorder.state !== "inactive") {
@@ -1130,7 +1144,8 @@ async function stopServerRecording() {
     // IMMER freigeben, egal was schiefgegangen ist - sonst haengt das
     // System nach einem einzelnen Fehler dauerhaft fest, ohne je wieder
     // eine neue Aufnahme zu starten (Session-Notiz 2026-09-28).
-    isServerRecording = false;
+    activeRecordings = Math.max(0, activeRecordings - 1);
+    if (activeRecordings === 0) pauseBtn.classList.remove("recording");
   }
 }
 
