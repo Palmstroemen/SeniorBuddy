@@ -958,12 +958,22 @@ const VAD_START_MS = 200; // so lange muss der Pegel ueber der Schwelle
                            // das Problem aber nicht vollstaendig, siehe
                            // Notiz zu Tastaturgeraeuschen - bewusst
                            // vertagt).
-const VAD_END_MS = 700; // so lange muss der Pegel darunter bleiben,
-                         // bevor "Sprechende" zaehlt (Endpointing fuer
-                         // den aktuellen Aufnahme-Schnipsel - NICHT zu
-                         // verwechseln mit GRACE_PERIOD_MS, das erst
-                         // NACH erkanntem Text die Weitergabe an die
-                         // Persona verzoegert).
+const VAD_END_MS = 1400; // so lange muss der Pegel darunter bleiben,
+                          // bevor "Sprechende" zaehlt (Endpointing fuer
+                          // den aktuellen Aufnahme-Schnipsel - NICHT zu
+                          // verwechseln mit GRACE_PERIOD_MS, das erst
+                          // NACH erkanntem Text die Weitergabe an die
+                          // Persona verzoegert). War 700ms - echte
+                          // Server-Logs (Session-Notiz 2026-09-30) haben
+                          // gezeigt, dass das mitten in normalen
+                          // Sprechpausen abschnitt: kurze Schnipsel
+                          // (0.7-1.6s) kamen als Bruchstuecke oder leer
+                          // zurueck, ein zufaellig langer Schnipsel
+                          // (6.78s) wurde dagegen vollstaendig und
+                          // korrekt erkannt. Erkennungsdauer selbst war
+                          // mit 0.5-1s pro Anfrage unauffaellig - das
+                          // Problem war zu frueh abgeschnittene Aufnahmen,
+                          // nicht zu langsame Verarbeitung.
 let vadSpeaking = false;
 let vadAboveSinceTs = null;
 let vadBelowSinceTs = null;
