@@ -793,6 +793,10 @@ function cancelPendingUtterance() {
   if (pendingUtteranceBubble) pendingUtteranceBubble.remove();
   pendingUtteranceBubble = null;
   pendingUtteranceText = "";
+  // Ein bewusstes Pausieren soll keine spaetere automatische
+  // Wiederaufnahme einer unterbrochenen Sprachausgabe mehr ausloesen
+  // (Session-Notiz 2026-09-30).
+  pendingResumeSpeech = null;
 }
 
 if (SpeechRecognition) {
@@ -991,17 +995,49 @@ let vadSpeaking = false;
 let vadAboveSinceTs = null;
 let vadBelowSinceTs = null;
 
+// Adaptive Zusatz-Schwelle gegen Dauergeraeusche (Session-Notiz
+// 2026-09-30): jedes "Aufnahme kam zurueck, aber ohne erkannten Text"
+// (siehe handleNoSpeechRecognized()) hebt die aktive Schwelle etwas an,
+// sie klingt danach von selbst wieder ab. Ein einmaliges kurzes
+// Geraeusch hebt sie nur minimal/kurz an; ein andauerndes Stoergeraeusch
+// loest das Signal wiederholt schnell hintereinander aus und haelt sie
+// dadurch oben, ganz ohne eigene "ist das dauerhaft?"-Erkennung.
+const NOISE_THRESHOLD_BOOST_STEP = 0.15;
+const NOISE_THRESHOLD_MAX_BOOST = 0.5;
+const NOISE_THRESHOLD_DECAY_PER_SECOND = 0.05; // alle drei Werte grob
+                                                // geschaetzt/einstellbar,
+                                                // nicht auf echter
+                                                // Hardware kalibriert.
+let noiseThresholdBoost = 0;
+// Gesetzt bei einer Barge-in-Unterbrechung (siehe onVadSpeechStart()),
+// geleert sobald entweder echte Sprache erkannt wurde (stopServerRecording())
+// oder die Wiederaufnahme tatsaechlich passiert ist (resumeInterruptedSpeech()).
+let pendingResumeSpeech = null; // { personaId, remainingTexts }
+let lastNoiseDecayTs = null;
+
+function decayNoiseThresholdBoost(now) {
+  if (lastNoiseDecayTs === null) { lastNoiseDecayTs = now; return; }
+  const elapsedSeconds = (now - lastNoiseDecayTs) / 1000;
+  lastNoiseDecayTs = now;
+  if (noiseThresholdBoost > 0) {
+    noiseThresholdBoost = Math.max(0, noiseThresholdBoost - NOISE_THRESHOLD_DECAY_PER_SECOND * elapsedSeconds);
+  }
+}
+
 function updateVad(level, now) {
   if (paused) {
     vadAboveSinceTs = null;
     vadBelowSinceTs = null;
     return;
   }
+  decayNoiseThresholdBoost(now);
   // isCurrentlySpeaking() blockiert hier bewusst NICHT mehr komplett -
   // echtes Dazwischenreden (Barge-in), siehe onVadSpeechStart(). Waehrend
   // die Persona spricht, gilt die hoehere BARGE_IN_LEVEL_THRESHOLD statt
-  // der normalen VAD_LEVEL_THRESHOLD.
-  const threshold = isCurrentlySpeaking() ? BARGE_IN_LEVEL_THRESHOLD : VAD_LEVEL_THRESHOLD;
+  // der normalen VAD_LEVEL_THRESHOLD, zusaetzlich zur adaptiven
+  // Geraeusch-Anhebung.
+  const baseThreshold = isCurrentlySpeaking() ? BARGE_IN_LEVEL_THRESHOLD : VAD_LEVEL_THRESHOLD;
+  const threshold = baseThreshold + noiseThresholdBoost;
   if (level >= threshold) {
     vadBelowSinceTs = null;
     if (!vadSpeaking) {
@@ -1027,8 +1063,20 @@ function onVadSpeechStart() {
   // Echtes Dazwischenreden (Barge-in, Session-Notiz 2026-09-30): laeuft
   // die Persona gerade, gilt ein Ueberschreiten der (hoeheren)
   // BARGE_IN_LEVEL_THRESHOLD als Unterbrechung - mit sanftem Fade-Out
-  // statt hartem Abschneiden.
+  // statt hartem Abschneiden. Merkt sich VORHER, welches Haeppchen
+  // gerade laeuft und was noch in der Warteschlange steht - falls sich
+  // die Aufnahme spaeter als reines Geraeusch herausstellt (kein Text
+  // erkannt), wird das unterbrochene Haeppchen von seinem ANFANG an neu
+  // gesprochen (siehe resumeInterruptedSpeech()), nicht an der exakten
+  // Abbruchstelle fortgesetzt.
   if (isCurrentlySpeaking()) {
+    pendingResumeSpeech = {
+      personaId: currentPersona,
+      remainingTexts: [
+        ...(currentChunkText ? [currentChunkText] : []),
+        ...speechQueue.map((item) => item.text),
+      ],
+    };
     interruptCurrentSpeechIfAny({ fadeOut: true });
   }
   reportSpeechPause(); // browser-/modusunabhaengige Rohdaten-Sammlung
@@ -1130,6 +1178,28 @@ function startServerRecording() {
   mediaRecorder = recorder;
 }
 
+// Eine Aufnahme kam zurueck, aber es wurde kein Text erkannt (leerer
+// Whisper-Text ODER gar keine Audio-Haeppchen) - war vermutlich nur ein
+// Geraeusch, kein echtes Sprechen. Hebt die adaptive Geraeusch-Schwelle
+// etwas an UND nimmt eine ggf. unterbrochene Sprachausgabe wieder auf
+// (Session-Notiz 2026-09-30).
+function handleNoSpeechRecognized() {
+  noiseThresholdBoost = Math.min(NOISE_THRESHOLD_MAX_BOOST, noiseThresholdBoost + NOISE_THRESHOLD_BOOST_STEP);
+  resumeInterruptedSpeech();
+}
+
+// Spielt das bei einer Barge-in-Unterbrechung gemerkte Haeppchen (plus
+// alles, was noch in der Warteschlange stand) von seinem ANFANG an neu
+// ein - keine audio-genaue Fortsetzung an der Abbruchstelle, das
+// unterbrochene Haeppchen beginnt komplett neu.
+function resumeInterruptedSpeech() {
+  const resume = pendingResumeSpeech;
+  pendingResumeSpeech = null;
+  if (!resume || resume.remainingTexts.length === 0) return;
+  currentPersona = resume.personaId;
+  resume.remainingTexts.forEach((text) => enqueueSpeech(text));
+}
+
 async function stopServerRecording() {
   // Eigene Instanz-Referenz sichern, statt spaeter ueber die
   // moeglicherweise inzwischen neu zugewiesene mediaRecorder-Variable zu
@@ -1150,7 +1220,7 @@ async function stopServerRecording() {
     // fuer die naechste Aeusserung offen (siehe stopMicLevelMeter()).
 
     const chunks = recorder._chunks || [];
-    if (chunks.length === 0) return;
+    if (chunks.length === 0) { handleNoSpeechRecognized(); return; }
     const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
     const start = performance.now();
     const form = new FormData();
@@ -1161,10 +1231,14 @@ async function stopServerRecording() {
     const seconds = ((performance.now() - start) / 1000).toFixed(1);
     showLatencyBadge("🎙️", "Server", seconds);
     if (data.text) {
+      pendingResumeSpeech = null; // echte Sprache erkannt - keine Wiederaufnahme mehr noetig
       appendToPendingUtterance(data.text.trim());
+    } else {
+      handleNoSpeechRecognized();
     }
   } catch (err) {
     addBubble("Spracherkennung auf dem Server war nicht erreichbar.", "notice");
+    resumeInterruptedSpeech(); // im Zweifel lieber weiterreden als dauerhaft stumm bleiben
   } finally {
     // IMMER freigeben, egal was schiefgegangen ist - sonst haengt das
     // System nach einem einzelnen Fehler dauerhaft fest, ohne je wieder
@@ -1325,6 +1399,13 @@ function speakReadyChunks(text, fromOffset, flush) {
 let currentAudio = null;
 const speechQueue = [];
 let queueRunning = false;
+// Welches Text-Haeppchen gerade (oder zuletzt) gesprochen wird/wurde -
+// gesetzt beim Start eines Haeppchens (playAudio()/speakChunkOnDevice()),
+// zurueckgesetzt bei NORMALEM Ende. Bleibt bei einer Barge-in-
+// Unterbrechung stehen (kein normales Ende) und wird dort ausgelesen,
+// um bei einer Fehlalarm-Wiederaufnahme zu wissen, WELCHER Text von
+// vorne neu gesprochen werden muss (Session-Notiz 2026-09-30).
+let currentChunkText = null;
 
 // Wettlauf-Schutz, analog zum bisherigen Mechanismus: jedes Haeppchen
 // merkt sich seine Generation und bricht still ab, falls
@@ -1442,12 +1523,14 @@ function playAudio(audio, text, myGeneration) {
   return new Promise((resolve) => {
     if (myGeneration !== speechGeneration) { resolve(); return; }
     currentAudio = audio;
+    currentChunkText = text;
     speakingPersona = currentPersona;
     lastSpeechEndTs = null; // eigene Ausgabe beginnt - kein Sprechpausen-Messwert daraus ableiten
     renderAvatarStage();
     const clearSafetyNet = scheduleStageSafetyNet(text);
     audio.addEventListener("ended", () => {
       if (currentAudio === audio) currentAudio = null;
+      currentChunkText = null; // normal zu Ende - nichts zum Wiederaufnehmen
       clearSafetyNet();
       resolve();
     });
@@ -1464,10 +1547,11 @@ function speakChunkOnDevice(text, myGeneration) {
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = "de-AT";
     speakingPersona = currentPersona;
+    currentChunkText = text;
     lastSpeechEndTs = null; // eigene Ausgabe beginnt - kein Sprechpausen-Messwert daraus ableiten
     renderAvatarStage();
     const clearSafetyNet = scheduleStageSafetyNet(text);
-    const finish = () => { clearSafetyNet(); resolve(); };
+    const finish = () => { currentChunkText = null; clearSafetyNet(); resolve(); };
     utter.addEventListener("end", finish);
     utter.addEventListener("error", finish);
     window.speechSynthesis.speak(utter);
