@@ -607,19 +607,14 @@ function sendText(text, bubble) {
     startListening();
   }
   bubble.classList.remove("pending");
-  const wasInterrupted = isCurrentlySpeaking();
-  const interruptedPersona = currentPersona;
   // Unterbricht eine noch laufende Ansage sofort (auch mitten im Satz) -
   // wer der Person gerade zuhoert, soll aufhoeren zu reden, sobald sie
-  // selbst etwas sagt, wie in einem echten Gespraech auch.
-  stopCurrentSpeech();
-  if (currentPersona) {
-    speakingPersona = null;
-    renderAvatarStage();
-  }
-  if (wasInterrupted && interruptedPersona) {
-    playReaction(interruptedPersona, "interrupted");
-  }
+  // selbst etwas sagt, wie in einem echten Gespraech auch. Bewusst OHNE
+  // Fade-Out (anders als das VAD-Barge-in, siehe onVadSpeechStart()) -
+  // beim manuellen Tippen/Senden ist das Abbrechen schon durch den
+  // eigenen Klick eindeutig gewollt, ein Ausklingen wuerde hier nur
+  // unnoetig Zeit kosten.
+  interruptCurrentSpeechIfAny();
   socket.send(text);
 }
 
@@ -889,7 +884,15 @@ function resumeMicAudioCtxIfSuspended() {
 async function startMicLevelMeter() {
   if (micMonitorStream) return; // laeuft schon
   try {
-    micMonitorStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // echoCancellation/noiseSuppression/autoGainControl: Standard-
+    // Browserfunktionen, zusaetzliche kostenlose Absicherung fuers
+    // Barge-in (Session-Notiz 2026-09-30) - auf dem real getesteten
+    // Geraet schlaegt der Pegel auf die eigene Sprachausgabe zwar
+    // ohnehin nicht messbar aus, aber auf anderen Geraeten/Situationen
+    // koennte das anders sein.
+    micMonitorStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
   } catch (err) {
     // War bisher ein rein kosmetisches Scheitern (nur die Anzeige blieb
     // flach) - seit die eigene VAD/Server-Aufnahme denselben Strom
@@ -974,17 +977,32 @@ const VAD_END_MS = 1400; // so lange muss der Pegel darunter bleiben,
                           // mit 0.5-1s pro Anfrage unauffaellig - das
                           // Problem war zu frueh abgeschnittene Aufnahmen,
                           // nicht zu langsame Verarbeitung.
+const BARGE_IN_LEVEL_THRESHOLD = 0.3; // wie VAD_LEVEL_THRESHOLD grob
+                                       // geschaetzt/einstellbar, aber
+                                       // bewusst HOEHER: waehrend die
+                                       // Persona spricht, soll nur
+                                       // eindeutig lauteres eigenes
+                                       // Sprechen als Unterbrechung
+                                       // (Barge-in) zaehlen, nicht jede
+                                       // leise Rueckkopplung der eigenen
+                                       // Ausgabe uebers Mikrofon (Session-
+                                       // Notiz 2026-09-30).
 let vadSpeaking = false;
 let vadAboveSinceTs = null;
 let vadBelowSinceTs = null;
 
 function updateVad(level, now) {
-  if (paused || isCurrentlySpeaking()) {
+  if (paused) {
     vadAboveSinceTs = null;
     vadBelowSinceTs = null;
     return;
   }
-  if (level >= VAD_LEVEL_THRESHOLD) {
+  // isCurrentlySpeaking() blockiert hier bewusst NICHT mehr komplett -
+  // echtes Dazwischenreden (Barge-in), siehe onVadSpeechStart(). Waehrend
+  // die Persona spricht, gilt die hoehere BARGE_IN_LEVEL_THRESHOLD statt
+  // der normalen VAD_LEVEL_THRESHOLD.
+  const threshold = isCurrentlySpeaking() ? BARGE_IN_LEVEL_THRESHOLD : VAD_LEVEL_THRESHOLD;
+  if (level >= threshold) {
     vadBelowSinceTs = null;
     if (!vadSpeaking) {
       if (vadAboveSinceTs === null) vadAboveSinceTs = now;
@@ -1006,6 +1024,13 @@ function updateVad(level, now) {
 }
 
 function onVadSpeechStart() {
+  // Echtes Dazwischenreden (Barge-in, Session-Notiz 2026-09-30): laeuft
+  // die Persona gerade, gilt ein Ueberschreiten der (hoeheren)
+  // BARGE_IN_LEVEL_THRESHOLD als Unterbrechung - mit sanftem Fade-Out
+  // statt hartem Abschneiden.
+  if (isCurrentlySpeaking()) {
+    interruptCurrentSpeechIfAny({ fadeOut: true });
+  }
   reportSpeechPause(); // browser-/modusunabhaengige Rohdaten-Sammlung
                         // (server/speech_timing.py) - bisher an
                         // recognizer.speechstart gehaengt, funktioniert
@@ -1307,13 +1332,65 @@ let queueRunning = false;
 // eine neue Generation begonnen hat.
 let speechGeneration = 0;
 
-function stopCurrentSpeech() {
+const BARGE_IN_FADE_MS = 500; // Dauer des Ausklingens beim Barge-in
+                               // (Session-Notiz 2026-09-30) - wirkt
+                               // natuerlicher als ein hartes Abschneiden
+                               // mitten im Wort.
+
+function stopCurrentSpeech({ fadeOut = false } = {}) {
   speechGeneration++;
   speechQueue.length = 0;
-  window.speechSynthesis?.cancel();
+  window.speechSynthesis?.cancel(); // Lautstaerke eines laufenden
+                                     // SpeechSynthesis-Haeppchens laesst
+                                     // sich nicht sauber nachtraeglich
+                                     // faden (Browser-Einschraenkung) -
+                                     // bleibt dort abrupt, betrifft nur
+                                     // den Geraete-TTS-Fallback.
   if (currentAudio) {
-    currentAudio.pause();
+    if (fadeOut) {
+      fadeOutAndStop(currentAudio);
+    } else {
+      currentAudio.pause();
+    }
     currentAudio = null;
+  }
+}
+
+// Blendet die Lautstaerke des noch laufenden <audio>-Elements ueber
+// BARGE_IN_FADE_MS sanft auf 0 aus, bevor tatsaechlich pausiert wird.
+// currentAudio ist zu diesem Zeitpunkt schon auf null gesetzt (siehe
+// stopCurrentSpeech() - isCurrentlySpeaking() soll sofort "false"
+// liefern, damit eine neue Aufnahme ungehindert starten kann) - diese
+// Funktion haelt sich daher ihre EIGENE Referenz auf das Audio-Element.
+function fadeOutAndStop(audio) {
+  const startVolume = audio.volume;
+  const startTs = performance.now();
+  function step() {
+    const fraction = Math.min(1, (performance.now() - startTs) / BARGE_IN_FADE_MS);
+    audio.volume = startVolume * (1 - fraction);
+    if (fraction < 1) {
+      requestAnimationFrame(step);
+    } else {
+      audio.pause();
+    }
+  }
+  requestAnimationFrame(step);
+}
+
+// Gemeinsamer Baustein fuers Unterbrechen einer laufenden Sprachausgabe -
+// genutzt sowohl beim manuellen Senden/Tippen (sendText()) als auch beim
+// VAD-Barge-in (onVadSpeechStart()). options.fadeOut steuert nur, OB die
+// Lautstaerke aus- statt hart abgeschnitten wird (siehe stopCurrentSpeech()).
+function interruptCurrentSpeechIfAny(options = {}) {
+  const wasInterrupted = isCurrentlySpeaking();
+  const interruptedPersona = currentPersona;
+  stopCurrentSpeech(options);
+  if (currentPersona) {
+    speakingPersona = null;
+    renderAvatarStage();
+  }
+  if (wasInterrupted && interruptedPersona) {
+    playReaction(interruptedPersona, "interrupted");
   }
 }
 
