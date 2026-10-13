@@ -1041,13 +1041,31 @@ function updateVad(level, now) {
   if (level >= threshold) {
     vadBelowSinceTs = null;
     if (!vadSpeaking) {
-      if (vadAboveSinceTs === null) vadAboveSinceTs = now;
-      else if (now - vadAboveSinceTs >= VAD_START_MS) {
+      if (vadAboveSinceTs === null) {
+        vadAboveSinceTs = now;
+        // Aufnahme SOFORT beim allerersten Ueberschreiten starten, nicht
+        // erst nach VAD_START_MS - sonst fehlen die ersten ~200ms jeder
+        // Aeusserung in der Aufnahme fuer immer (Session-Notiz 2026-10-13:
+        // "Erzaehle mir etwas" kam nur als "mir etwas" an). Ob es wirklich
+        // Sprache war, entscheidet sich trotzdem erst mit der Bestaetigung
+        // unten - bricht der Pegel vorher wieder ein, wird die (dann sehr
+        // kurze) Aufnahme verworfen statt hochgeladen (siehe unten).
+        if (sttMode === "server" && listening) {
+          startServerRecording();
+        }
+      } else if (now - vadAboveSinceTs >= VAD_START_MS) {
         vadSpeaking = true;
         onVadSpeechStart();
       }
     }
   } else {
+    if (vadAboveSinceTs !== null && !vadSpeaking) {
+      // Pegel ist wieder unter der Schwelle, BEVOR die VAD_START_MS-
+      // Bestaetigung erreicht wurde - nur ein kurzer Ausschlag (Klick,
+      // Knacken), kein echtes Sprechen. Die vorsorglich schon gestartete
+      // Aufnahme wird verworfen statt hochgeladen.
+      discardUnconfirmedRecording();
+    }
     vadAboveSinceTs = null;
     if (vadSpeaking) {
       if (vadBelowSinceTs === null) vadBelowSinceTs = now;
@@ -1083,15 +1101,9 @@ function onVadSpeechStart() {
                         // (server/speech_timing.py) - bisher an
                         // recognizer.speechstart gehaengt, funktioniert
                         // dadurch jetzt erstmals auch auf Firefox.
-  // KEINE isServerRecording-Bremse mehr (siehe startServerRecording()) -
-  // die Zustandsmaschine hier laesst ohnehin immer nur EIN Start/Ende-
-  // Paar gleichzeitig offen (vadSpeaking muss erst wieder false werden,
-  // bevor dieser Zweig ueberhaupt erneut feuert), eine neue Aeusserung
-  // darf also jederzeit eine neue Aufnahme anstossen, auch waehrend die
-  // vorherige noch hochlaedt.
-  if (sttMode === "server" && listening) {
-    startServerRecording();
-  }
+  // Die Aufnahme selbst laeuft an dieser Stelle bereits (siehe updateVad()'s
+  // erste Schwellen-Ueberschreitung) - hier nur noch die Folgen der
+  // BESTAETIGTEN Sprache (Grace-Period verlaengern etc.).
   if (pendingUtteranceBubble) resetGraceTimer();
 }
 
@@ -1176,6 +1188,19 @@ function startServerRecording() {
   recorder._chunks = chunks;
   recorder.start();
   mediaRecorder = recorder;
+}
+
+// Stoppt eine Aufnahme, die vorsorglich beim ersten Pegel-Ausschlag
+// gestartet wurde, sich aber NIE als echtes Sprechen bestaetigt hat (Pegel
+// fiel vor VAD_START_MS wieder unter die Schwelle) - verworfen, statt an
+// den Server geschickt zu werden. Spart den Umweg ueber Whisper fuer jeden
+// einzelnen Tastatur-Klick (Session-Notiz 2026-10-13).
+function discardUnconfirmedRecording() {
+  const recorder = mediaRecorder;
+  if (!recorder || recorder.state === "inactive") return;
+  recorder.stop(); // Chunks werden nie gelesen/hochgeladen
+  activeRecordings = Math.max(0, activeRecordings - 1);
+  if (activeRecordings === 0) pauseBtn.classList.remove("recording");
 }
 
 // Eine Aufnahme kam zurueck, aber es wurde kein Text erkannt (leerer
