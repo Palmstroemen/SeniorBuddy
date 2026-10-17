@@ -9,6 +9,12 @@ server/data/*.sqlite3
 # Honeypot-Koederdatei -- wird bei jedem Start neu angelegt
 server/data/.honeypot/
 
+# Persistierte Admin-Einstellungen + Update-Marker/-Log (admin_settings.py)
+# -- lokaler Laufzeitzustand, nicht Teil des Repos
+server/data/admin_settings.json
+server/data/.update_requested
+server/data/.update_log
+
 # Piper-Stimmmodelle -- wie Ollama-Modelle nicht im Repo, siehe
 # speech-service/setup.sh
 speech-service/voices/

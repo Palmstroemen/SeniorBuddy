@@ -14,6 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 import logging
 
 import llm_client
+import newsfeed
 import sentiment_job
 from config import PERSONAS
 
@@ -73,6 +74,12 @@ def setup_scheduler():
         sentiment_job.classify_pending_messages,
         CronTrigger(hour=SENTIMENT_JOB_HOUR, minute=SENTIMENT_JOB_MINUTE),
         id="classify_sentiment",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        newsfeed.build_daily_agendas,
+        CronTrigger(hour=newsfeed.NEWSFEED_JOB_HOUR, minute=newsfeed.NEWSFEED_JOB_MINUTE),
+        id="build_daily_agendas",
         replace_existing=True,
     )
     if not scheduler.running:

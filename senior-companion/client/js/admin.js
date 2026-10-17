@@ -12,6 +12,7 @@ const FIELD_LABELS = {
   face_eyebrows: "Augenbrauen", face_eyes: "Augen",
   face_mouth: "Mund", face_hairstyle: "Frisur", face_beard: "Bart",
   long_term_agenda: "Langzeitagenda", daily_agenda: "Tagesagenda",
+  rss_feeds: "RSS-Feeds",
   own_backstory: "Eigene Geschichte", own_interests: "Eigene Interessen",
   family_relations: "Verwandtschaft",
 };
@@ -79,6 +80,7 @@ const facePreview = document.getElementById("facePreview");
 const faceFieldsContainer = document.getElementById("faceFieldsContainer");
 const longTermAgendaInput = document.getElementById("longTermAgendaInput");
 const dailyAgendaInput = document.getElementById("dailyAgendaInput");
+const rssFeedsInput = document.getElementById("rssFeedsInput");
 const ownBackstoryInput = document.getElementById("ownBackstoryInput");
 const ownInterestsInput = document.getElementById("ownInterestsInput");
 const familyRelationsInput = document.getElementById("familyRelationsInput");
@@ -499,7 +501,7 @@ const DEFAULT_PERSONA = {
   face_hairstyle: "kurz", face_beard: "",
   always_loaded: true, max_tokens: 400, reengagement_tendency: 0.5,
   color: "#4A5D52", background_color: "#E9EEEA",
-  long_term_agenda: "", daily_agenda: "", own_backstory: "",
+  long_term_agenda: "", daily_agenda: "", rss_feeds: [], own_backstory: "",
   own_interests: "", family_relations: "",
 };
 
@@ -535,6 +537,9 @@ async function fillForm(persona, isCreate) {
 
   longTermAgendaInput.value = persona.long_term_agenda || "";
   dailyAgendaInput.value = persona.daily_agenda || "";
+  rssFeedsInput.value = (persona.rss_feeds || [])
+    .map((f) => (f.weight === 100 ? f.url : `${f.url} ${f.weight}`))
+    .join("\n");
   ownBackstoryInput.value = persona.own_backstory || "";
   ownInterestsInput.value = persona.own_interests || "";
   familyRelationsInput.value = persona.family_relations || "";
@@ -617,6 +622,19 @@ function buildBody(isCreate) {
     background_color: backgroundColorInput.value,
     long_term_agenda: longTermAgendaInput.value,
     daily_agenda: dailyAgendaInput.value,
+    rss_feeds: rssFeedsInput.value
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split(/\s+/);
+        const last = Number(parts[parts.length - 1]);
+        const hasWeight = parts.length > 1 && Number.isInteger(last) && last >= 0 && last <= 100;
+        return {
+          url: hasWeight ? parts.slice(0, -1).join(" ") : line,
+          weight: hasWeight ? last : 100,
+        };
+      }),
     own_backstory: ownBackstoryInput.value,
     own_interests: ownInterestsInput.value,
     family_relations: familyRelationsInput.value,

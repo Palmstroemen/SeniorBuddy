@@ -5,22 +5,12 @@ siehe PersonaConfig.reaction_phrases. speech_client.synthesize() wird
 durchgaengig gemockt (kein echter Sprachdienst noetig, siehe
 test_llm_client.py fuer dasselbe Prinzip bei Ollama).
 """
-import pytest
-
 import config
 import reaction_audio
 
-
-@pytest.fixture(autouse=True)
-def _reset_reaction_audio_cache():
-    """_cache ist absichtlich Modul-globaler Zustand (soll ueber die
-    gesamte Prozesslaufzeit wirken) - zwischen Tests aber isoliert
-    zuruecksetzen, sonst wuerde ein frueherer Test denselben (Stimme,
-    Satz)-Cache-Eintrag hinterlassen und einen spaeteren Test
-    verfaelschen."""
-    reaction_audio._cache.clear()
-    yield
-    reaction_audio._cache.clear()
+# _reset_reaction_audio_cache ist jetzt in conftest.py (projektweit
+# autouse) - frueher hier lokal, wirkte dadurch nur innerhalb dieser
+# einen Datei, siehe dortiger Kommentar fuer den Hintergrund.
 
 
 class _StubPersona:

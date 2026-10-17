@@ -666,6 +666,27 @@ async def run_turn(
                     triggered.id, context_check["rule"],
                 )
 
+    # Tag/Nacht-Zyklus (Session-Notiz 2026-10-17, siehe newsfeed.py):
+    # was diese Persona heute frueh schon "mitbekommen" hat - leer,
+    # solange ihr keine rss_feeds zugewiesen sind oder der naechtliche
+    # Job noch nicht gelaufen ist.
+    if persona.daily_agenda:
+        context_check = guard.check_context(persona.daily_agenda)
+        if context_check["ok"]:
+            chat_messages.append({
+                "role": "system",
+                "content": (
+                    "[Deine heutige Tagesagenda - das hast du heute "
+                    "schon mitbekommen und erzaehlst gern davon, wenn "
+                    f"es passt]: {persona.daily_agenda}"
+                ),
+            })
+        else:
+            log.warning(
+                "Tagesagenda von '%s' blockiert (Regel=%s)",
+                persona.id, context_check["rule"],
+            )
+
     facts = memory.list_facts(user_id, limit=20)
     if facts:
         fact_lines = "; ".join(f"{f['key']}: {f['value']}" for f in facts)
@@ -799,7 +820,11 @@ async def run_auto_turn(
     Beantworten einer Frage - neu injizierte Fakten wuerden eher als
     Non-Sequitur wirken als die ohnehin vorhandene Historie sinnvoll zu
     ergaenzen), OHNE Anrede-Erkennung/Zufriedenheits-Checkin/
-    DEFLECTION_HINT_PROMPT (es wurde niemand angesprochen).
+    DEFLECTION_HINT_PROMPT (es wurde niemand angesprochen). EINE
+    Ausnahme (Session-Notiz 2026-10-17): persona.daily_agenda WIRD
+    injiziert, wenn vorhanden - anders als Fakten/Wissensbasis ist das
+    kein Antwortmaterial auf eine Frage, sondern genau der Anlass, von
+    sich aus weiterzureden ("grosse Lust, davon zu erzaehlen").
 
     Laeuft als Low-Priority-Task (priority.register_low_priority_task,
     NICHT senior_stream_started/finished) - exakt das Muster von
@@ -827,6 +852,24 @@ async def run_auto_turn(
     chat_messages = [
         {"role": m["role"], "content": m["content"]} for m in history
     ]
+
+    if persona.daily_agenda:
+        context_check = guard.check_context(persona.daily_agenda)
+        if context_check["ok"]:
+            chat_messages.append({
+                "role": "system",
+                "content": (
+                    "[Deine heutige Tagesagenda - das hast du heute "
+                    "schon mitbekommen und erzaehlst gern davon, wenn "
+                    f"es passt]: {persona.daily_agenda}"
+                ),
+            })
+        else:
+            log.warning(
+                "Tagesagenda von '%s' blockiert (Regel=%s)",
+                persona.id, context_check["rule"],
+            )
+
     chat_messages.append({
         "role": "system",
         "content": autoturn.AUTO_TURN_PROMPTS[kind],
@@ -1250,6 +1293,7 @@ class PersonaFieldsIn(BaseModel):
     own_backstory: str = ""
     own_interests: str = ""
     family_relations: str = ""
+    rss_feeds: list[dict] = []
 
     @field_validator(
         "face_eyebrows", "face_eyes", "face_mouth", "face_hairstyle", "face_beard",

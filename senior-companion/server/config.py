@@ -102,6 +102,14 @@ class PersonaConfig:
     own_backstory: str = ""
     own_interests: str = ""
     family_relations: str = ""  # Eltern, Geschwister usw. der Persona selbst
+    # Tag/Nacht-Zyklus (Session-Notiz 2026-10-17): je Eintrag
+    # {"url": str, "weight": int (0-100, Vorgabe 100)} - im Persona-
+    # Designer als Textarea editierbar (eine Zeile pro Feed, "URL
+    # [Gewichtung]", siehe client/admin.js). Leer = diese Persona nimmt
+    # am naechtlichen Tagesagenda-Mechanismus (siehe newsfeed.py) nicht
+    # teil - bewusst GENERISCH, kein hartkodiertes Zuweisen von
+    # Zeitungen/Sendern im Code, der Nutzer traegt echte URLs selbst ein.
+    rss_feeds: list[dict] = dataclasses.field(default_factory=list)
 
     @property
     def display_name(self) -> str:

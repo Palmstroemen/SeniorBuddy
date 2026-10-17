@@ -49,3 +49,24 @@ def _isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(admin_settings, "UPDATE_MARKER_FILE", tmp_path / ".update_requested")
     monkeypatch.setattr(admin_settings, "UPDATE_LOG_FILE", tmp_path / ".update_log")
     yield tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _reset_reaction_audio_cache():
+    """reaction_audio._cache ist absichtlich Modul-globaler Zustand
+    (soll ueber die gesamte Prozesslaufzeit wirken) - zwischen Tests
+    aber isoliert zuruecksetzen, sonst kann ein frueherer Test (in
+    IRGENDEINER Datei) denselben (Stimme, Satz)-Cache-Eintrag
+    hinterlassen und einen spaeteren Test verfaelschen. War zuvor nur
+    lokal in test_reaction_audio.py autouse (wirkt dort NUR innerhalb
+    dieser einen Datei) - echte Ueberschneidung live beobachtet
+    (Session-Notiz 2026-10-17): RESUMED_REACTION_PHRASES' "sie"/"du"-
+    Listen teilen sich mehrere anrede-neutrale Saetze woertlich, zwei
+    benachbarte Tests in test_api.py konnten per random.choice()
+    zufaellig denselben Satz ziehen und sich so unbemerkt den Cache
+    teilen - abhaengig vom globalen random-Zustand, also je nachdem, was
+    vorher sonst noch im Testlauf passiert ist."""
+    import reaction_audio
+    reaction_audio._cache.clear()
+    yield
+    reaction_audio._cache.clear()

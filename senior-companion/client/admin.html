@@ -131,12 +131,15 @@
       <div id="faceFieldsContainer"></div>
 
       <details class="admin-narrative-fields">
-        <summary>Weitere Felder (noch ohne Wirkung im Gespräch)</summary>
-        <label>Langzeitagenda
+        <summary>Weitere Felder (Geschichte/Interessen/Verwandtschaft noch ohne Wirkung im Gespräch)</summary>
+        <label>Langzeitagenda (Linse für die nächtliche Zeitungsauswahl, siehe RSS-Feeds unten)
           <textarea id="longTermAgendaInput" rows="3"></textarea>
         </label>
-        <label>Tagesagenda
+        <label>Tagesagenda (wird jede Nacht aus den RSS-Feeds neu gebaut, falls welche gesetzt sind)
           <textarea id="dailyAgendaInput" rows="3"></textarea>
+        </label>
+        <label>RSS-Feeds (eine URL je Zeile, optional gefolgt von einer Gewichtung in % - z.B. "https://diepresse.com/rss 80"). Leer = diese Persona nimmt am nächtlichen Tagesagenda-Mechanismus nicht teil.
+          <textarea id="rssFeedsInput" rows="3" placeholder="https://... 100"></textarea>
         </label>
         <label>Eigene Geschichte
           <textarea id="ownBackstoryInput" rows="3"></textarea>
