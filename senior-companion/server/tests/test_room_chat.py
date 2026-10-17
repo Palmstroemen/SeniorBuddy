@@ -1000,6 +1000,75 @@ def test_room_chat_delivered_lookahead_text_matches_chain_head_exactly(
     )
 
 
+def test_room_chat_ready_linear_lookahead_head_bypasses_pause_gate(
+    monkeypatch, _fast_autoturn_timing,
+):
+    """Session-Notiz 2026-10-17: live beobachtet, dass eine laengst
+    fertig gebaute/vertonte Fortsetzung (branch_kind="linear") trotzdem
+    20+ Sekunden auf sich warten liess, weil autoturn.should_continue()
+    pauschal auf JEDE Fortsetzung angewendet wurde - auch auf eine reine
+    Weiterfuehrung desselben, noch unfertigen Gedankens, bei der gar
+    keine Antwort der Person erwartet wird. random.random() wird hier
+    bewusst auf 0.99 gezwungen ("nie fortsetzen") - trotzdem muss die
+    bereite lineare Fortsetzung ankommen, weil main.py das Gate fuer
+    diesen Fall jetzt ueberspringt."""
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield "sollte nie reaktiv generiert werden"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.99)
+    room.touch("lookahead_room_c", "freundin")
+
+    chain = lookahead.Chain(user_id="lookahead_room_c", persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(
+        depth=1, kind="continue", text="Bereite lineare Fortsetzung.", branch_kind="linear",
+    ))
+    lookahead._chains["lookahead_room_c"] = chain
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/lookahead_room_c") as ws:
+            msgs = _drain_until(ws, lambda m: m.get("type") == "done" and m.get("auto"))
+
+    token_msgs = [m for m in msgs if m.get("type") == "token" and m.get("auto")]
+    assert any(m["content"] == "Bereite lineare Fortsetzung." for m in token_msgs)
+
+
+def test_room_chat_ready_fork_root_lookahead_head_still_respects_pause_gate(
+    monkeypatch, _fast_autoturn_timing,
+):
+    """Gegenprobe zu test_room_chat_ready_linear_lookahead_head_bypasses_pause_gate:
+    eine bereite Frage (branch_kind="fork_root") ist ein echter
+    Entscheidungspunkt - dafuer war autoturn.should_continue() gedacht
+    und bleibt dort aktiv. Mit random.random() auf 0.99 gezwungen darf
+    innerhalb des Beobachtungsfensters NICHTS ankommen, auch keine
+    reaktive Fortsetzung."""
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield "sollte nie gesendet werden"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.99)  # nie fortsetzen
+    room.touch("lookahead_room_d", "freundin")
+
+    chain = lookahead.Chain(user_id="lookahead_room_d", persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(
+        depth=1, kind="continue", text="Was meinen Sie dazu?", branch_kind="fork_root",
+    ))
+    lookahead._chains["lookahead_room_d"] = chain
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/lookahead_room_d") as ws:
+            deadline = time.time() + 0.35
+            saw_auto_turn = False
+            while time.time() < deadline:
+                remaining = max(0.01, deadline - time.time())
+                msg = _receive_json_with_timeout(ws, remaining)
+                if msg is not None and msg.get("type") != "presence":
+                    saw_auto_turn = True
+                    break
+
+    assert saw_auto_turn is False
+
+
 def test_room_chat_empty_chain_falls_back_to_reactive_generation_unchanged(
     monkeypatch, _fast_autoturn_timing,
 ):

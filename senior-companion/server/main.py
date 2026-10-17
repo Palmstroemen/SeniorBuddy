@@ -958,12 +958,31 @@ async def room_chat(websocket: WebSocket, user_id: str):
                     present, key=lambda p: room.last_active_ts(user_id, p) or 0.0,
                 )
                 last_speaker = PERSONAS.get(last_speaker_id) or PERSONAS[FALLBACK_PERSONA]
-                if not autoturn.should_continue(last_speaker.reengagement_tendency):
-                    continue
 
+                # director.pick_responder() VOR das Gate gezogen (reine
+                # Funktion, keine Seiteneffekte) - erst wenn bekannt ist,
+                # WER als Naechstes drankaeme, laesst sich entscheiden, ob
+                # das Pausen-Zufalls-Gate ueberhaupt greifen soll.
                 last_active = {p: (room.last_active_ts(user_id, p) or 0.0) for p in candidates}
                 picked_id = director.pick_responder(candidates, None, last_active, time.time())
                 persona = PERSONAS.get(picked_id) or PERSONAS[FALLBACK_PERSONA]
+
+                # Das Pausen-Zufalls-Gate gilt NICHT, wenn DIESELBE Persona
+                # lediglich eine bereits vorgebaute, reine Fortsetzung
+                # ihres eigenen, noch unfertigen Gedankens ausliefert
+                # (branch_kind="linear") - das ist keine Frage an die
+                # Person und verdient keine zusaetzliche Zufallspause
+                # (Session-Notiz 2026-10-17, live beobachtet: 20+ Sekunden
+                # Verzoegerung trotz laengst fertig gebautem/vertontem
+                # naechsten Satz). Jede andere Situation (als Naechstes
+                # stuende tatsaechlich eine Frage an, ODER eine ANDERE
+                # Persona wuerde einspringen, ODER es muesste reaktiv neu
+                # generiert werden) bleibt wie bisher gegated - genau
+                # dafuer war das Gate urspruenglich gedacht.
+                upcoming_kind = lookahead.peek_head_branch_kind(user_id, picked_id)
+                skip_pause_gate = picked_id == last_speaker_id and upcoming_kind == "linear"
+                if not skip_pause_gate and not autoturn.should_continue(last_speaker.reengagement_tendency):
+                    continue
 
                 # Vorausschauend gebaute Kette pruefen, BEVOR reaktiv
                 # generiert wird (siehe lookahead.py) - liefert bei

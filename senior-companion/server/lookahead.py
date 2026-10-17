@@ -692,6 +692,23 @@ def chain_persona_id(user_id: str) -> str | None:
     return chain.persona_id if chain is not None else None
 
 
+def peek_head_branch_kind(user_id: str, persona_id: str) -> str | None:
+    """Reiner Lesezugriff (keine Mutation, kein Verbrauch) auf den
+    branch_kind des Knotens, der als naechstes ausgeliefert wuerde -
+    main.py nutzt das, um das Pausen-Zufalls-Gate (autoturn.should_continue)
+    NUR auf echte Entscheidungspunkte (fork_root) anzuwenden, nicht auf
+    plain Fortsetzungen (linear) desselben, noch unfertigen Gedankens
+    (Session-Notiz 2026-10-17). None, wenn keine passende Kette existiert
+    oder der naechste Knoten noch nicht fertig gebaut ist."""
+    chain = _chains.get(user_id)
+    if chain is None or chain.persona_id != persona_id:
+        return None
+    head = _head_child(chain)
+    if head is None or head.status != "ready":
+        return None
+    return head.branch_kind
+
+
 def debug_state(user_id: str) -> dict | None:
     """Fuer main.py's GET /api/lookahead-debug/{user_id} - eine sehr
     knappe Live-KPI-Anzeige waehrend der Entwicklung (bewusst nur

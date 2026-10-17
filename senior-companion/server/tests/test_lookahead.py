@@ -257,6 +257,46 @@ def test_stats_delivery_rate_is_zero_not_error_when_nothing_built_at_that_depth(
     assert result["delivery_rate_by_depth"]["5"] == 0.0
 
 
+def test_peek_head_branch_kind_returns_none_when_no_chain_exists():
+    assert lookahead.peek_head_branch_kind("lookahead_peek_user_a", "freundin") is None
+
+
+def test_peek_head_branch_kind_returns_linear_for_ready_linear_head():
+    chain = lookahead.Chain(user_id="lookahead_peek_user_b", persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Weiter geht's."))
+    lookahead._chains["lookahead_peek_user_b"] = chain
+
+    assert lookahead.peek_head_branch_kind("lookahead_peek_user_b", "freundin") == "linear"
+
+
+def test_peek_head_branch_kind_returns_fork_root_for_ready_question_head():
+    chain = lookahead.Chain(user_id="lookahead_peek_user_c", persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(
+        depth=1, kind="continue", text="Was meinen Sie dazu?", branch_kind="fork_root",
+    ))
+    lookahead._chains["lookahead_peek_user_c"] = chain
+
+    assert lookahead.peek_head_branch_kind("lookahead_peek_user_c", "freundin") == "fork_root"
+
+
+def test_peek_head_branch_kind_returns_none_for_wrong_persona():
+    chain = lookahead.Chain(user_id="lookahead_peek_user_d", persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Weiter geht's."))
+    lookahead._chains["lookahead_peek_user_d"] = chain
+
+    assert lookahead.peek_head_branch_kind("lookahead_peek_user_d", "professor") is None
+
+
+def test_peek_head_branch_kind_returns_none_when_head_not_ready_yet():
+    chain = lookahead.Chain(user_id="lookahead_peek_user_e", persona_id="freundin")
+    chain.levels.append(lookahead.ChainLevel(
+        depth=1, kind="continue", text="", status="building",
+    ))
+    lookahead._chains["lookahead_peek_user_e"] = chain
+
+    assert lookahead.peek_head_branch_kind("lookahead_peek_user_e", "freundin") is None
+
+
 def test_debug_state_returns_none_when_no_chain_exists():
     assert lookahead.debug_state("lookahead_debug_user_a") is None
 
