@@ -81,6 +81,9 @@ const faceFieldsContainer = document.getElementById("faceFieldsContainer");
 const longTermAgendaInput = document.getElementById("longTermAgendaInput");
 const dailyAgendaInput = document.getElementById("dailyAgendaInput");
 const rssFeedsInput = document.getElementById("rssFeedsInput");
+const feedDiscoverySiteInput = document.getElementById("feedDiscoverySiteInput");
+const feedDiscoveryBtn = document.getElementById("feedDiscoveryBtn");
+const feedDiscoveryResults = document.getElementById("feedDiscoveryResults");
 const ownBackstoryInput = document.getElementById("ownBackstoryInput");
 const ownInterestsInput = document.getElementById("ownInterestsInput");
 const familyRelationsInput = document.getElementById("familyRelationsInput");
@@ -340,6 +343,46 @@ async function refreshSpeakerOptions(currentSpeakerId) {
 }
 
 voiceIdInput.addEventListener("change", () => refreshSpeakerOptions(null));
+
+// Bestmoegliche RSS-Feed-Suche (feed_discovery.py, Session-Notiz
+// 2026-10-18): Feed-Autodiscovery + ein paar uebliche Pfade als
+// Rueckfall - kein Allheilmittel, daher ehrliches "nichts gefunden"
+// statt etwas vorzutaeuschen. Titel kommen von einer fremden Webseite -
+// IMMER escapeHtml(), bevor sie in innerHTML landen.
+feedDiscoveryBtn.addEventListener("click", async () => {
+  const site = feedDiscoverySiteInput.value.trim();
+  if (!site) return;
+  feedDiscoveryResults.innerHTML = "<li>Suche läuft …</li>";
+  let feeds = [];
+  try {
+    const res = await authedFetch(`/admin/newsfeed/discover?url=${encodeURIComponent(site)}`);
+    feeds = await res.json();
+  } catch (err) {
+    feedDiscoveryResults.innerHTML = "<li>Suche fehlgeschlagen.</li>";
+    return;
+  }
+  if (feeds.length === 0) {
+    feedDiscoveryResults.innerHTML = (
+      "<li>Nichts gefunden - diese Seite bietet vermutlich keine " +
+      "automatisch erkennbaren Feeds. Bekannte RSS-Adresse direkt " +
+      "unten eintragen.</li>"
+    );
+    return;
+  }
+  feedDiscoveryResults.innerHTML = feeds
+    .map((f, i) => (
+      `<li><button type="button" class="admin-btn admin-btn-secondary" ` +
+      `data-feed-index="${i}">+ ${escapeHtml(f.title)}</button></li>`
+    ))
+    .join("");
+  feedDiscoveryResults.querySelectorAll("[data-feed-index]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const feed = feeds[Number(btn.dataset.feedIndex)];
+      const existing = rssFeedsInput.value.trim();
+      rssFeedsInput.value = existing ? `${existing}\n${feed.url}` : feed.url;
+    });
+  });
+});
 
 // Stimmen-Dropdown auf die neue Geschlechts-Kategorie einschraenken und
 // gleich die erste passende Stimme vorwaehlen (voiceIdInput ist

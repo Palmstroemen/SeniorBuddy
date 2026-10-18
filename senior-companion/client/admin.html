@@ -138,6 +138,13 @@
         <label>Tagesagenda (wird jede Nacht aus den RSS-Feeds neu gebaut, falls welche gesetzt sind)
           <textarea id="dailyAgendaInput" rows="3"></textarea>
         </label>
+        <label>Feeds auf einer Webseite suchen (bestmöglich - nicht jede Seite bietet das an)
+          <span class="admin-range-row">
+            <input type="text" id="feedDiscoverySiteInput" placeholder="z.B. diepresse.com">
+            <button type="button" id="feedDiscoveryBtn" class="admin-btn admin-btn-secondary">Suchen</button>
+          </span>
+        </label>
+        <ul id="feedDiscoveryResults" class="admin-feed-discovery-results"></ul>
         <label>RSS-Feeds (eine URL je Zeile, optional gefolgt von einer Gewichtung in % - z.B. "https://diepresse.com/rss 80"). Leer = diese Persona nimmt am nächtlichen Tagesagenda-Mechanismus nicht teil.
           <textarea id="rssFeedsInput" rows="3" placeholder="https://... 100"></textarea>
         </label>

@@ -7,8 +7,12 @@ zuruecksetzbar sind). Flaches Schema (siehe config.py::PersonaConfig) -
 eine Persona hat EIN Geschlecht, EINEN Namen, EINE Stimme, kein
 Varianten-Dict mehr.
 """
+import asyncio
+import time
+
 import config
 import main
+import priority
 import pytest
 from fastapi.testclient import TestClient
 
@@ -18,6 +22,21 @@ ADMIN_HEADERS = {"Authorization": "Bearer test-admin-token"}
 @pytest.fixture(autouse=True)
 def _admin_token(monkeypatch):
     monkeypatch.setattr(main.admin_auth, "ADMIN_TOKEN", "test-admin-token")
+
+
+@pytest.fixture(autouse=True)
+def _reset_priority_state():
+    """Modul-globaler Zustand (siehe test_priority.py) - zwischen Tests
+    zuruecksetzen, sonst beeinflusst ein Test die naechsten (betrifft
+    hier die newsfeed.refresh_persona_agenda()-Sofort-Trigger-Tests
+    unten)."""
+    priority._active_senior_streams = 0
+    priority._low_priority_tasks.clear()
+    priority._idle_event.set()
+    yield
+    priority._active_senior_streams = 0
+    priority._low_priority_tasks.clear()
+    priority._idle_event.set()
 
 
 @pytest.fixture(autouse=True)
@@ -321,3 +340,110 @@ def test_admin_persona_mutation_preserves_persona_dict_identity():
     assert id(personas_ref_held_separately) == dict_id_before
     assert "nachbarin" in main.PERSONAS
     assert "nachbarin" in personas_ref_held_separately
+
+
+# --- RSS-Feeds: sofortiger Tagesagenda-Refresh bei Aenderung (2026-10-18) --
+
+async def test_spawn_newsfeed_refresh_is_registered_and_cancellable(monkeypatch):
+    async def never_returns(*args, **kwargs):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(main.newsfeed, "refresh_persona_agenda", never_returns)
+
+    # _spawn_newsfeed_refresh() gibt (anders als spawn_handoff_task())
+    # bewusst nichts zurueck - reines fire-and-forget. Die Task selbst
+    # aus der Registrierung holen, statt auf einen Rueckgabewert zu bauen.
+    main._spawn_newsfeed_refresh("freundin")
+    assert len(priority._low_priority_tasks) == 1
+    task = next(iter(priority._low_priority_tasks))
+
+    priority.senior_stream_started()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+    assert task not in priority._low_priority_tasks
+
+
+def test_update_persona_with_new_feeds_triggers_refresh(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "_spawn_newsfeed_refresh", lambda pid: calls.append(pid))
+    body = _persona_body(None, rss_feeds=[{"url": "https://example.com/feed.xml", "weight": 100}])
+
+    with TestClient(main.app) as client:
+        r = client.put("/admin/personas/reporter", json=body, headers=ADMIN_HEADERS)
+
+    assert r.status_code == 200
+    assert calls == ["reporter"]
+
+
+def test_update_persona_with_unchanged_feeds_does_not_trigger_refresh(monkeypatch):
+    feeds = [{"url": "https://example.com/feed.xml", "weight": 100}]
+    with TestClient(main.app) as client:
+        # Erster Speichervorgang setzt die Feeds.
+        client.put(
+            "/admin/personas/reporter", json=_persona_body(None, rss_feeds=feeds),
+            headers=ADMIN_HEADERS,
+        )
+        calls = []
+        monkeypatch.setattr(main, "_spawn_newsfeed_refresh", lambda pid: calls.append(pid))
+        # Zweiter Speichervorgang: dieselben Feeds, nur die Farbe geaendert.
+        r = client.put(
+            "/admin/personas/reporter",
+            json=_persona_body(None, rss_feeds=feeds, color="#112233"),
+            headers=ADMIN_HEADERS,
+        )
+
+    assert r.status_code == 200
+    assert calls == []
+
+
+def test_update_persona_without_feeds_does_not_trigger_refresh(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "_spawn_newsfeed_refresh", lambda pid: calls.append(pid))
+    body = _persona_body(None, system_prompt="Nur der Prompt aendert sich.")
+
+    with TestClient(main.app) as client:
+        r = client.put("/admin/personas/reporter", json=body, headers=ADMIN_HEADERS)
+
+    assert r.status_code == 200
+    assert calls == []
+
+
+def test_create_persona_with_feeds_triggers_refresh(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "_spawn_newsfeed_refresh", lambda pid: calls.append(pid))
+    body = _persona_body(rss_feeds=[{"url": "https://example.com/feed.xml", "weight": 100}])
+
+    with TestClient(main.app) as client:
+        r = client.post("/admin/personas", json=body, headers=ADMIN_HEADERS)
+
+    assert r.status_code == 201
+    assert calls == ["nachbarin"]
+
+
+def test_create_persona_without_feeds_does_not_trigger_refresh(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "_spawn_newsfeed_refresh", lambda pid: calls.append(pid))
+
+    with TestClient(main.app) as client:
+        r = client.post("/admin/personas", json=_persona_body(), headers=ADMIN_HEADERS)
+
+    assert r.status_code == 201
+    assert calls == []
+
+
+def test_update_persona_response_does_not_wait_for_refresh(monkeypatch):
+    async def slow_refresh(persona_id):
+        await asyncio.sleep(0.3)
+        return True
+
+    monkeypatch.setattr(main.newsfeed, "refresh_persona_agenda", slow_refresh)
+    body = _persona_body(None, rss_feeds=[{"url": "https://example.com/feed.xml", "weight": 100}])
+
+    with TestClient(main.app) as client:
+        start = time.monotonic()
+        r = client.put("/admin/personas/reporter", json=body, headers=ADMIN_HEADERS)
+        elapsed = time.monotonic() - start
+
+    assert r.status_code == 200
+    assert elapsed < 0.2

@@ -29,12 +29,14 @@ import autoturn
 import config
 import director
 import display
+import feed_discovery
 import handoff
 import honeypot
 import knowledge
 import llm_client
 import lookahead
 import memory
+import newsfeed
 import priority
 import reaction_audio
 import room
@@ -1387,6 +1389,26 @@ async def admin_voice_speakers(voice_name: str):
     return await speech_client.voice_speakers(voice_name)
 
 
+@app.get("/admin/newsfeed/discover", dependencies=[Depends(admin_auth.require_admin)])
+async def discover_newsfeeds(url: str):
+    """Bestmoegliche RSS-Feed-Suche fuer den Persona-Designer (siehe
+    feed_discovery.py) - [] statt eines Fehlers, wenn nichts gefunden
+    wird, der Client zeigt dann einfach "nichts gefunden" an."""
+    return await feed_discovery.discover_feeds(url)
+
+
+def _spawn_newsfeed_refresh(persona_id: str) -> None:
+    """Fire-and-forget Sofort-Refresh nach einer Feed-Aenderung im
+    Persona-Designer (Session-Notiz 2026-10-18) - exaktes
+    Registrierungsmuster wie spawn_handoff_task() (siehe dort fuer die
+    Begruendung: create_task() + SYNCHRON direkt danach registrieren,
+    kein await dazwischen, sonst ein Race-Fenster gegen einen parallel
+    beginnenden Senior-Stream)."""
+    task = asyncio.create_task(newsfeed.refresh_persona_agenda(persona_id))
+    priority.register_low_priority_task(task)
+    task.add_done_callback(priority.unregister_low_priority_task)
+
+
 def _persist_all_personas():
     admin_settings.update("personas", [p.to_dict() for p in PERSONAS.values()])
 
@@ -1411,6 +1433,10 @@ async def create_admin_persona(body: PersonaCreateIn):
         raise HTTPException(409, "Persona-ID existiert bereits")
     config.apply_persona_overrides([body.model_dump()])
     _persist_all_personas()
+    # Neue Persona hatte vorher per Definition keine Feeds - jede jetzt
+    # gesetzte Liste zaehlt also als Aenderung (Session-Notiz 2026-10-18).
+    if PERSONAS[body.id].rss_feeds:
+        _spawn_newsfeed_refresh(body.id)
     warnings = await _model_availability_warnings(body.model)
     return {**_persona_out(PERSONAS[body.id]), "warnings": warnings}
 
@@ -1421,8 +1447,16 @@ async def create_admin_persona(body: PersonaCreateIn):
 async def update_admin_persona(persona_id: str, body: PersonaFieldsIn):
     if persona_id not in PERSONAS:
         raise HTTPException(404, "Persona nicht gefunden")
+    old_feeds = PERSONAS[persona_id].rss_feeds
     config.apply_persona_overrides([{**body.model_dump(), "id": persona_id}])
     _persist_all_personas()
+    # Sofortiger Tagesagenda-Refresh NUR bei echter Aenderung der
+    # Feed-Liste (Session-Notiz 2026-10-18: "Wenn ich einen Feed
+    # hinzufuege") - nicht bei jedem Speichern, z.B. nur die Farbe zu
+    # aendern soll nicht jedes Mal alle Zeitungen neu abrufen.
+    new_feeds = PERSONAS[persona_id].rss_feeds
+    if new_feeds and new_feeds != old_feeds:
+        _spawn_newsfeed_refresh(persona_id)
     warnings = await _model_availability_warnings(body.model)
     return {**_persona_out(PERSONAS[persona_id]), "warnings": warnings}
 

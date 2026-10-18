@@ -118,6 +118,36 @@ def _log_transparency(persona) -> None:
         )
 
 
+async def refresh_persona_agenda(persona_id: str) -> bool:
+    """Baut die daily_agenda EINER Persona neu und persistiert bei
+    Erfolg - True, wenn tatsaechlich etwas Neues geschrieben wurde.
+    Gemeinsam genutzt vom naechtlichen Job (build_daily_agendas())
+    UND vom sofortigen Refresh nach einer Feed-Aenderung im Persona-
+    Designer (main.py's create_admin_persona()/update_admin_persona(),
+    Session-Notiz 2026-10-18: "Wenn ich einen Feed hinzufuege, wird er
+    sofort mal ausgelesen")."""
+    persona = config.PERSONAS.get(persona_id)
+    if persona is None or not persona.rss_feeds:
+        return False
+    agenda = await build_daily_agenda_for_persona(persona)
+    if not agenda:
+        return False
+    # NICHT persona.daily_agenda direkt mutieren: PERSONAS-Eintraege
+    # koennen (fuer unveraenderte Personas) dieselbe Objekt-Referenz wie
+    # config._BUILTIN_PERSONAS sein (siehe config.py: "_BUILTIN_PERSONAS
+    # = dict(PERSONAS)", eine flache Kopie) - eine In-Place-Mutation
+    # wuerde dann auch die "Zuruecksetzen auf Standard"-Vorlage
+    # dauerhaft veraendern. Stattdessen, wie ueberall sonst im Projekt
+    # (apply_persona_overrides()), ein NEUES Objekt einsetzen.
+    updated = dataclasses.replace(persona, daily_agenda=agenda)
+    config.PERSONAS[persona_id] = updated
+    _log_transparency(updated)
+    admin_settings.update(
+        "personas", [p.to_dict() for p in config.PERSONAS.values()],
+    )
+    return True
+
+
 async def build_daily_agendas() -> None:
     """Scheduler-Job (06:00, siehe scheduler.py) - fuer jede Persona MIT
     rss_feeds eine neue daily_agenda bauen. Persona ohne Feeds wird
@@ -127,28 +157,8 @@ async def build_daily_agendas() -> None:
     task = asyncio.current_task()
     priority.register_low_priority_task(task)
     try:
-        changed = False
-        for persona_id, persona in list(config.PERSONAS.items()):
-            if not persona.rss_feeds:
-                continue
-            agenda = await build_daily_agenda_for_persona(persona)
-            if agenda:
-                # NICHT persona.daily_agenda direkt mutieren: PERSONAS-
-                # Eintraege koennen (fuer unveraenderte Personas) dieselbe
-                # Objekt-Referenz wie config._BUILTIN_PERSONAS sein (siehe
-                # config.py: "_BUILTIN_PERSONAS = dict(PERSONAS)", eine
-                # flache Kopie) - eine In-Place-Mutation wuerde dann auch
-                # die "Zuruecksetzen auf Standard"-Vorlage dauerhaft
-                # veraendern. Stattdessen, wie ueberall sonst im Projekt
-                # (apply_persona_overrides()), ein NEUES Objekt einsetzen.
-                updated = dataclasses.replace(persona, daily_agenda=agenda)
-                config.PERSONAS[persona_id] = updated
-                changed = True
-                _log_transparency(updated)
-        if changed:
-            admin_settings.update(
-                "personas", [p.to_dict() for p in config.PERSONAS.values()],
-            )
+        for persona_id in list(config.PERSONAS.keys()):
+            await refresh_persona_agenda(persona_id)
     except asyncio.CancelledError:
         log.info("Tagesagenda-Job unterbrochen (Senior-Gespraech hat Vorrang)")
         raise  # wie sentiment_job.py: CancelledError sauber weiterreichen, nicht schlucken

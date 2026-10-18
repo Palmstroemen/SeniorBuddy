@@ -218,6 +218,60 @@ async def test_build_daily_agenda_weighting_affects_headline_pool_size(httpx_moc
     assert line_count == newsfeed.MAX_ITEMS_PER_FEED + newsfeed._weighted_item_count(20)
 
 
+# --- refresh_persona_agenda: Einzel-Persona-Refresh (Sofort-Trigger) -----
+
+async def test_refresh_persona_agenda_returns_false_without_feeds():
+    clear_all_feeds()
+
+    result = await newsfeed.refresh_persona_agenda("freundin")
+
+    assert result is False
+
+
+async def test_refresh_persona_agenda_returns_false_for_unknown_persona():
+    result = await newsfeed.refresh_persona_agenda("gibt_es_nicht")
+
+    assert result is False
+
+
+async def test_refresh_persona_agenda_updates_and_persists(httpx_mock):
+    clear_all_feeds()
+    set_persona_feeds(
+        "freundin", [{"url": "https://example.com/feed.xml", "weight": 100}],
+    )
+    httpx_mock.add_response(url="https://example.com/feed.xml", text=SAMPLE_FEED_XML)
+    httpx_mock.add_response(
+        url=f"{llm_client.OLLAMA_URL}/api/chat",
+        **_chat_response("Frische Tagesagenda."),
+    )
+
+    result = await newsfeed.refresh_persona_agenda("freundin")
+
+    assert result is True
+    assert config.PERSONAS["freundin"].daily_agenda == "Frische Tagesagenda."
+    saved = admin_settings.load()["personas"]
+    freundin_saved = next(p for p in saved if p["id"] == "freundin")
+    assert freundin_saved["daily_agenda"] == "Frische Tagesagenda."
+
+
+async def test_refresh_persona_agenda_logs_transparency(httpx_mock):
+    memory.add_message("refresh_transparency_user", "freundin", "user", "Hallo")
+    clear_all_feeds()
+    set_persona_feeds(
+        "freundin", [{"url": "https://example.com/feed.xml", "weight": 100}],
+    )
+    httpx_mock.add_response(url="https://example.com/feed.xml", text=SAMPLE_FEED_XML)
+    httpx_mock.add_response(
+        url=f"{llm_client.OLLAMA_URL}/api/chat",
+        **_chat_response("Agenda."),
+    )
+
+    await newsfeed.refresh_persona_agenda("freundin")
+
+    log = memory.get_transparency_log("refresh_transparency_user")
+    assert any(entry["plugin"] == "newsfeed:freundin" for entry in log)
+
+
 # --- build_daily_agendas: der eigentliche Scheduler-Job -------------------
 
 async def test_build_daily_agendas_skips_personas_without_feeds(httpx_mock):
