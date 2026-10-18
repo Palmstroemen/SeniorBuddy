@@ -15,7 +15,7 @@
 
 <header class="admin-topbar">
   <h1>Persona-Designer</h1>
-  <button id="logoutBtn" class="admin-btn admin-btn-secondary" hidden>Abmelden</button>
+  <button id="logoutBtn" class="admin-btn admin-btn-secondary" hidden>Zurück</button>
 </header>
 
 <main id="loginView" class="admin-login">
@@ -60,7 +60,7 @@
         Immer geladen
       </label>
       <label>
-        Max. Tokens
+        Max. Tokens (Obergrenze für die Länge einer einzelnen Antwort - höher erlaubt längere Antworten, braucht aber länger zum Generieren; zu niedrig schneidet mitten im Satz ab)
         <input type="number" id="maxTokensInput" min="1" max="4096" required>
       </label>
       <label>
