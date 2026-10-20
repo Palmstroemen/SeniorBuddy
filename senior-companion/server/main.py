@@ -705,8 +705,11 @@ async def run_turn(
                     "[Deine heutige Tagesagenda - das hast du heute "
                     "schon mitbekommen, du verfolgst regelmaessig "
                     "Nachrichten/Zeitungen und bestaetigst das auch "
-                    "ehrlich, wenn man dich danach fragt. Du erzaehlst "
-                    f"gern davon, wenn es passt]: {persona.daily_agenda}"
+                    "ehrlich, wenn man dich danach fragt. Wenn mehrere "
+                    "Themen drin sind, erzaehlst du zunaechst nur von "
+                    "EINEM ausfuehrlich und laesst dir Zeit dafuer, "
+                    "statt gleich alles aufzuzaehlen - die anderen "
+                    f"bleiben fuer ein andermal]: {persona.daily_agenda}"
                 ),
             })
         else:
@@ -894,8 +897,11 @@ async def run_auto_turn(
                     "[Deine heutige Tagesagenda - das hast du heute "
                     "schon mitbekommen, du verfolgst regelmaessig "
                     "Nachrichten/Zeitungen und bestaetigst das auch "
-                    "ehrlich, wenn man dich danach fragt. Du erzaehlst "
-                    f"gern davon, wenn es passt]: {persona.daily_agenda}"
+                    "ehrlich, wenn man dich danach fragt. Wenn mehrere "
+                    "Themen drin sind, erzaehlst du zunaechst nur von "
+                    "EINEM ausfuehrlich und laesst dir Zeit dafuer, "
+                    "statt gleich alles aufzuzaehlen - die anderen "
+                    f"bleiben fuer ein andermal]: {persona.daily_agenda}"
                 ),
             })
         else:
