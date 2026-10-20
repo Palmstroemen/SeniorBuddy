@@ -124,7 +124,18 @@ class PersonaConfig:
         Uebergabe-Erkennung (room.detect_addressed_persona(),
         handoff.detect_handoff_target()) sonst den vollen Titel
         mitsprechen muesste, um erkannt zu werden - niemand sagt
-        "Professor Wallner, was meinst du dazu?" in echtem Gespraech."""
+        "Professor Wallner, was meinst du dazu?" in echtem Gespraech.
+        Bei einer Persona MIT title UND last_name (z.B. "Professor
+        Wallner") zaehlt NUR der Nachname, der Vorname wird ignoriert -
+        live beobachteter Bug (Session-Notiz 2026-10-20): sobald im
+        Persona-Designer zusaetzlich ein Vorname eingetragen wurde
+        (hier "Egon"), verlangte die bisherige first_name+last_name-
+        Verkettung ploetzlich das volle "Egon Wallner", und das
+        schlichte "Wallner, ..." (wie es echte Nutzer:innen sagen)
+        wurde nicht mehr erkannt. Ohne title bleibt es wie bisher bei
+        first_name (+ last_name, falls vorhanden)."""
+        if self.title and self.last_name:
+            return self.last_name
         return " ".join(p for p in (self.first_name, self.last_name) if p)
 
     def to_dict(self) -> dict:

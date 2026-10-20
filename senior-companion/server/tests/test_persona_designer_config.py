@@ -46,6 +46,37 @@ def _sample_persona_dict(persona_id="testpersona"):
     }
 
 
+# --- address_name: Ansprache-/Uebergabe-Erkennung (room.py/handoff.py) ---
+
+def test_address_name_is_last_name_only_when_title_and_first_name_both_set():
+    """Regressionswaechter (live auf gmxtec aufgefallen, Session-Notiz
+    2026-10-20): sobald im Persona-Designer zusaetzlich zum Nachnamen
+    auch ein Vorname eingetragen wurde, verlangte address_name
+    ploetzlich BEIDE Namen ("Egon Wallner") - das simple "Wallner, ...",
+    wie es echte Nutzer:innen sagen (siehe test_api.py's
+    test_list_personas_includes_address_name_without_title), wurde
+    nicht mehr erkannt, die Persona liess sich faktisch nicht mehr
+    aufrufen."""
+    d = _sample_persona_dict("titeltest")
+    d.update(first_name="Egon", last_name="Wallner", title="Professor")
+    config.apply_persona_overrides([d])
+    assert config.PERSONAS["titeltest"].address_name == "Wallner"
+
+
+def test_address_name_uses_first_name_when_no_title():
+    d = _sample_persona_dict("vornametest")
+    d.update(first_name="Robin", last_name="")
+    config.apply_persona_overrides([d])
+    assert config.PERSONAS["vornametest"].address_name == "Robin"
+
+
+def test_address_name_uses_full_name_when_last_name_but_no_title():
+    d = _sample_persona_dict("nachnameohnetest")
+    d.update(first_name="Max", last_name="Mustermann", title="")
+    config.apply_persona_overrides([d])
+    assert config.PERSONAS["nachnameohnetest"].address_name == "Max Mustermann"
+
+
 def test_persona_config_to_dict_from_dict_roundtrip():
     original = config.PERSONAS["freundin"]
     restored = config.PersonaConfig.from_dict(original.to_dict())
