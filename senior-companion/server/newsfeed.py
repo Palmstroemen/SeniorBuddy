@@ -38,6 +38,16 @@ NEWSFEED_JOB_MINUTE = 0
 
 MAX_ITEMS_PER_FEED = 8  # je Feed VOR Gewichtung abgerufen
 
+# Bewusst UNABHAENGIG von persona.model: die Tagesagenda-Verdichtung ist
+# ein Hintergrund-Job, keine Gespraechs-Antwort - die Persona darf im
+# Chat mit einem anderen (z.B. deutschsprachig-natuerlicheren) Modell
+# sprechen, ohne dass der naechtliche Job dessen Zuverlaessigkeit erbt.
+# Live beobachtet (Session-Notiz 2026-10-20): ein kleineres 7B-Modell
+# hat diese Zusammenfassungsaufgabe wiederholt verweigert/als Liste
+# statt Fliesstext beantwortet, waehrend qwen2.5:32b-instruct
+# zuverlaessig funktioniert hat.
+SUMMARY_MODEL = "qwen2.5:32b-instruct"
+
 NEWSFEED_SELECTION_PROMPT = (
     "Du bekommst eine Liste aktueller Schlagzeilen mit kurzer "
     "Beschreibung. Waehle 2-4 Themen aus, die am besten zu folgendem "
@@ -47,6 +57,29 @@ NEWSFEED_SELECTION_PROMPT = (
     "Liste - ein natuerlicher kleiner Absatz auf Deutsch."
 )
 DEFAULT_AGENDA_FALLBACK = "aktuelle, fuer aeltere Menschen interessante Ereignisse"
+
+# Manche (meist kleinere/schwaechere) Modelle befolgen die
+# Verdichtungs-Anweisung nicht, sondern antworten mit einer
+# Entschuldigung/Meta-Kommentar statt einer echten Zusammenfassung -
+# live beobachtet (Session-Notiz 2026-10-20) bei einer Persona mit
+# einem 7B-Modell: "Es tut mir leid, aber ich kann diese Nachrichten
+# nicht komplett uebersetzen...". So ein Text darf NIE als
+# daily_agenda gespeichert werden (die Persona wuerde ihn woertlich
+# "kennen" und im Gespraech paraphrasieren) - lieber gar kein Update
+# als ein kaputtes.
+REFUSAL_MARKERS = (
+    "es tut mir leid",
+    "als sprachmodell",
+    "als ki-modell",
+    "als künstliche intelligenz",
+    "kann ich nicht",
+    "kann ich leider nicht",
+)
+
+
+def _looks_like_refusal(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in REFUSAL_MARKERS)
 
 
 async def fetch_feed(url: str) -> list[tuple[str, str]]:
@@ -98,10 +131,18 @@ async def build_daily_agenda_for_persona(persona) -> str | None:
     prompt = NEWSFEED_SELECTION_PROMPT.format(
         agenda=persona.long_term_agenda or DEFAULT_AGENDA_FALLBACK,
     )
-    return await llm_client.generate(
-        persona.model, prompt,
+    result = await llm_client.generate(
+        SUMMARY_MODEL, prompt,
         [{"role": "user", "content": headline_text}], max_tokens=400,
     )
+    if not result or _looks_like_refusal(result):
+        log.warning(
+            "Tagesagenda von '%s' verworfen - Modell '%s' hat offenbar "
+            "nicht zusammengefasst, sondern verweigert/kommentiert: %r",
+            persona.id, persona.model, result,
+        )
+        return None
+    return result
 
 
 def _log_transparency(persona) -> None:

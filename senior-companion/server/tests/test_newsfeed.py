@@ -218,6 +218,61 @@ async def test_build_daily_agenda_weighting_affects_headline_pool_size(httpx_moc
     assert line_count == newsfeed.MAX_ITEMS_PER_FEED + newsfeed._weighted_item_count(20)
 
 
+@pytest.mark.parametrize("refusal_text", [
+    "Es tut mir leid, aber ich kann diese Nachrichten nicht komplett übersetzen.",
+    "Als Sprachmodell habe ich keine Fähigkeit, Zeitungen zu lesen.",
+    "ES TUT MIR LEID, das kann ich nicht zusammenfassen.",
+])
+async def test_build_daily_agenda_returns_none_when_model_refuses(httpx_mock, refusal_text):
+    set_persona_feeds(
+        "freundin", [{"url": "https://example.com/feed.xml", "weight": 100}],
+    )
+    httpx_mock.add_response(url="https://example.com/feed.xml", text=SAMPLE_FEED_XML)
+
+    async def fake_generate(model, system_prompt, messages, max_tokens=400):
+        return refusal_text
+
+    original = llm_client.generate
+    llm_client.generate = fake_generate
+    try:
+        result = await newsfeed.build_daily_agenda_for_persona(config.PERSONAS["freundin"])
+    finally:
+        llm_client.generate = original
+
+    assert result is None
+
+
+async def test_build_daily_agenda_always_uses_summary_model_not_persona_model(httpx_mock):
+    set_persona_feeds(
+        "professor", [{"url": "https://example.com/feed.xml", "weight": 100}],
+    )
+    config.PERSONAS["professor"] = dataclasses.replace(
+        config.PERSONAS["professor"], model="some-other-weaker-model",
+    )
+    httpx_mock.add_response(url="https://example.com/feed.xml", text=SAMPLE_FEED_XML)
+    captured = {}
+
+    async def fake_generate(model, system_prompt, messages, max_tokens=400):
+        captured["model"] = model
+        return "Verdichtete Tagesagenda."
+
+    original = llm_client.generate
+    llm_client.generate = fake_generate
+    try:
+        await newsfeed.build_daily_agenda_for_persona(config.PERSONAS["professor"])
+    finally:
+        llm_client.generate = original
+
+    assert captured["model"] == newsfeed.SUMMARY_MODEL
+    assert captured["model"] != "some-other-weaker-model"
+
+
+async def test_looks_like_refusal_is_false_for_a_real_summary():
+    assert not newsfeed._looks_like_refusal(
+        "Heute gab es einen interessanten Artikel über einen Fotowettbewerb."
+    )
+
+
 # --- refresh_persona_agenda: Einzel-Persona-Refresh (Sofort-Trigger) -----
 
 async def test_refresh_persona_agenda_returns_false_without_feeds():
