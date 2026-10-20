@@ -679,8 +679,10 @@ async def run_turn(
                 "role": "system",
                 "content": (
                     "[Deine heutige Tagesagenda - das hast du heute "
-                    "schon mitbekommen und erzaehlst gern davon, wenn "
-                    f"es passt]: {persona.daily_agenda}"
+                    "schon mitbekommen, du verfolgst regelmaessig "
+                    "Nachrichten/Zeitungen und bestaetigst das auch "
+                    "ehrlich, wenn man dich danach fragt. Du erzaehlst "
+                    f"gern davon, wenn es passt]: {persona.daily_agenda}"
                 ),
             })
         else:
@@ -862,8 +864,10 @@ async def run_auto_turn(
                 "role": "system",
                 "content": (
                     "[Deine heutige Tagesagenda - das hast du heute "
-                    "schon mitbekommen und erzaehlst gern davon, wenn "
-                    f"es passt]: {persona.daily_agenda}"
+                    "schon mitbekommen, du verfolgst regelmaessig "
+                    "Nachrichten/Zeitungen und bestaetigst das auch "
+                    "ehrlich, wenn man dich danach fragt. Du erzaehlst "
+                    f"gern davon, wenn es passt]: {persona.daily_agenda}"
                 ),
             })
         else:
