@@ -54,6 +54,18 @@ def set_daily_agenda(persona_id: str, text: str) -> None:
     )
 
 
+def set_persona_background(
+    persona_id: str, *, own_backstory: str = "", family_relations: str = "",
+    own_interests: str = "",
+) -> None:
+    config.PERSONAS[persona_id] = dataclasses.replace(
+        config.PERSONAS[persona_id],
+        own_backstory=own_backstory,
+        family_relations=family_relations,
+        own_interests=own_interests,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_lookahead_state(monkeypatch):
     """Ohne diese Sicherung wuerde JEDER bestehende Test in dieser
@@ -275,6 +287,73 @@ def test_room_chat_daily_agenda_blocked_by_guard_does_not_crash_the_turn(monkeyp
 
     injected = [m for m in captured["messages"] if m["role"] == "system"]
     assert not any("Tagesagenda" in m["content"] for m in injected)
+
+
+# --- Eigener Hintergrund (own_backstory/family_relations/own_interests) -
+
+def test_room_chat_background_context_is_injected_when_present(monkeypatch):
+    set_persona_background(
+        "freundin", own_backstory="72 Jahre alt.",
+        family_relations="Eine Schwester in Graz.",
+        own_interests="Gaertnern, Kochen",
+    )
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Alles gut!"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    room.touch("room_user_bg_a", "freundin")
+
+    with TestClient(main.app) as client:
+        _room_turns(client, "room_user_bg_a", ["Wie geht's dir?"])
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    combined = " ".join(m["content"] for m in injected)
+    assert "72 Jahre alt" in combined
+    assert "Graz" in combined
+    assert "Gaertnern" in combined
+
+
+def test_room_chat_background_context_injects_nothing_when_all_empty(monkeypatch):
+    set_persona_background("freundin")
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Alles gut!"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    room.touch("room_user_bg_b", "freundin")
+
+    with TestClient(main.app) as client:
+        _room_turns(client, "room_user_bg_b", ["Wie geht's dir?"])
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert not any("Über dich selbst" in m["content"] for m in injected)
+
+
+def test_room_chat_auto_turn_injects_background_context_when_present(
+    monkeypatch, _fast_autoturn_timing,
+):
+    set_persona_background("freundin", own_backstory="72 Jahre alt.")
+    captured = {}
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        captured["messages"] = messages
+        yield "Ach, das erinnert mich an frueher."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.0)  # immer fortsetzen
+    room.touch("auto_user_bg", "freundin")
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/room/auto_user_bg") as ws:
+            _drain_until(ws, lambda m: m.get("type") == "done" and m.get("auto"))
+
+    injected = [m for m in captured["messages"] if m["role"] == "system"]
+    assert any("72 Jahre alt" in m["content"] for m in injected)
 
 
 def test_room_chat_addressing_an_absent_persona_makes_them_present(monkeypatch):

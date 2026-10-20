@@ -620,6 +620,26 @@ async def chat(websocket: WebSocket, user_id: str, persona_id: str):
         log.info("Verbindung getrennt: %s / %s", user_id, persona_id)
 
 
+def _persona_background_context(persona) -> str | None:
+    """Fasst own_backstory/family_relations/own_interests (config.py,
+    bis Session-Notiz 2026-10-20 im Persona-Designer editierbar, aber
+    NIE in den Prompt-Aufbau eingespeist) zu EINER Systemnachricht
+    zusammen - None, wenn alle drei leer sind. Direkt vom Admin
+    eingegebener, vertrauenswuerdiger Text (wie persona.system_prompt
+    selbst) - anders als persona.daily_agenda (aus RSS-Feeds) daher
+    OHNE guard.check_context()."""
+    parts = []
+    if persona.own_backstory:
+        parts.append(persona.own_backstory)
+    if persona.family_relations:
+        parts.append(f"Familie: {persona.family_relations}")
+    if persona.own_interests:
+        parts.append(f"Eigene Interessen: {persona.own_interests}")
+    if not parts:
+        return None
+    return "[Über dich selbst]: " + " ".join(parts)
+
+
 # ---------------------------------------------------------------------
 # Gruppenchat: mehrere Personas koennen gleichzeitig "anwesend" sein.
 #
@@ -651,6 +671,10 @@ async def run_turn(
     chat_messages = [
         {"role": m["role"], "content": m["content"]} for m in history
     ]
+
+    background_context = _persona_background_context(persona)
+    if background_context:
+        chat_messages.append({"role": "system", "content": background_context})
 
     triggered = find_triggered_plugin(plugins, persona.id, user_text)
     if triggered:
@@ -856,6 +880,10 @@ async def run_auto_turn(
     chat_messages = [
         {"role": m["role"], "content": m["content"]} for m in history
     ]
+
+    background_context = _persona_background_context(persona)
+    if background_context:
+        chat_messages.append({"role": "system", "content": background_context})
 
     if persona.daily_agenda:
         context_check = guard.check_context(persona.daily_agenda)
@@ -1289,7 +1317,7 @@ class PersonaFieldsIn(BaseModel):
     # gesetzte reaction_phrases stillschweigend auf {} zuruecksetzen -
     # PersonaConfig.from_dict() fuellt jeden fehlenden Schluessel mit
     # dem Dataclass-Default auf.
-    reaction_phrases: dict[str, list[str]] = {}
+    reaction_phrases: dict[str, list[str] | dict[str, list[str]]] = {}
     # Neu, bewusst noch unwirksam (siehe config.py's PersonaConfig-Docstring) -
     # trotzdem schon hier annehmbar/persistierbar, damit der Persona-
     # Designer sie schon zeigen/speichern kann, bevor ihr Prompt-Einbau

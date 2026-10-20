@@ -91,12 +91,13 @@ class PersonaConfig:
     # waehlt dann anhand des gespeicherten anrede-Fakts. Bewusst generisch/
     # erweiterbar fuer kuenftige Situationen.
     reaction_phrases: dict[str, list[str] | dict[str, list[str]]] = dataclasses.field(default_factory=dict)
-    # Neu (Session-Notiz 2026-09-23), bewusst UNWIRKSAM in dieser Runde:
-    # gespeichert/im Persona-Designer editierbar, aber noch NICHT in den
-    # Prompt-Aufbau (main.py's run_turn()/run_auto_turn()) eingespeist -
-    # ihre genaue Wirkung ist noch nicht spezifiziert, siehe
-    # Projektgedaechtnis. Absichtlich keine "Dominanz"-Kennzahl dazu (noch
-    # komplett unspezifiziert, im Gegensatz zu diesen vieren).
+    # long_term_agenda: Filter/Linse fuer die naechtliche Tagesagenda-
+    # Auswahl (newsfeed.py), NICHT direkt in den Chat injiziert.
+    # daily_agenda: taeglich neu, wird injiziert (newsfeed.py/main.py).
+    # own_backstory/own_interests/family_relations: seit Session-Notiz
+    # 2026-10-20 ebenfalls in den Prompt-Aufbau eingespeist (main.py's
+    # _persona_background_context(), in run_turn()/run_auto_turn()) -
+    # bis dahin gespeichert/editierbar, aber bewusst unwirksam.
     long_term_agenda: str = ""
     daily_agenda: str = ""
     own_backstory: str = ""

@@ -200,10 +200,11 @@ def test_create_persona_with_reaction_phrases_roundtrips():
     assert r.json()["reaction_phrases"] == {"interrupted": ["Äh?", "Moment!"]}
 
 
-def test_create_persona_with_narrative_fields_roundtrips_but_stays_inert():
-    """Die 4 neuen Agenda-/Geschichte-Felder (+ Verwandtschaft) werden
-    angenommen/persistiert, beeinflussen aber (noch) kein Verhalten -
-    siehe config.py::PersonaConfig-Docstring."""
+def test_create_persona_with_narrative_fields_roundtrips():
+    """Die Agenda-/Geschichte-Felder (+ Verwandtschaft) werden
+    angenommen/persistiert - ihre Wirkung auf den Prompt-Aufbau wird
+    separat in test_room_chat.py geprueft (main.py's
+    _persona_background_context())."""
     body = _persona_body(
         long_term_agenda="Will irgendwann von Enkelkindern hoeren.",
         daily_agenda="Fragt heute nach dem Wetter.",
@@ -238,6 +239,26 @@ def test_update_persona_preserves_reaction_phrases_when_resent_unchanged():
         client.put("/admin/personas/nachbarin", json=update_body, headers=ADMIN_HEADERS)
         r = client.get("/admin/personas/nachbarin", headers=ADMIN_HEADERS)
     assert r.json()["reaction_phrases"] == {"interrupted": ["Äh?"]}
+
+
+def test_create_persona_with_anrede_aware_resumed_phrases_roundtrips():
+    """Regressionswaechter (live auf gmxtec aufgefallen, Session-Notiz
+    2026-10-20): config.py's reaction_phrases erlaubt je Situation ENTWEDER
+    eine flache Liste ODER ein {'sie': [...], 'du': [...]}-Dict (siehe
+    RESUMED_REACTION_PHRASES in config.py) - PersonaFieldsIn liess bis
+    dahin nur die flache Liste zu und lehnte ein PUT mit der bereits bei
+    'reporter' persistierten anrede-aware Form mit 422 ab."""
+    body = _persona_body()
+    body["reaction_phrases"] = {
+        "resumed": {"sie": ["Schön, dass Sie wieder da sind."], "du": ["Schön, dass du wieder da bist."]},
+    }
+    with TestClient(main.app) as client:
+        r = client.post("/admin/personas", json=body, headers=ADMIN_HEADERS)
+        assert r.status_code == 201
+        r = client.get("/admin/personas/nachbarin", headers=ADMIN_HEADERS)
+    assert r.json()["reaction_phrases"] == {
+        "resumed": {"sie": ["Schön, dass Sie wieder da sind."], "du": ["Schön, dass du wieder da bist."]},
+    }
 
 
 def test_update_persona_takes_effect_immediately():
