@@ -77,13 +77,13 @@ def _canned_stream_factory(replies):
     return fake_stream, counter
 
 
-async def _await_chain_built(user_id, target_len=5, timeout=2.0):
+async def _await_chain_built(user_id, persona_id="robin", target_len=5, timeout=2.0):
     """Beschraenktes Polling statt blockierendem await auf chain.build_task
     - siehe Begruendung in server/tests/test_room_chat.py."""
     import time
     deadline = time.time() + timeout
     while time.time() < deadline:
-        chain = lookahead._chains.get(user_id)
+        chain = lookahead._chains.get(user_id, {}).get(persona_id)
         if chain is not None and len(chain.levels) >= target_len:
             return chain
         await asyncio.sleep(0.01)
@@ -135,7 +135,7 @@ def test_consume_head_returns_none_when_no_chain_exists():
 def test_consume_head_returns_none_when_chain_belongs_to_different_persona():
     chain = lookahead.Chain(user_id="lookahead_user_d", persona_id="freundin")
     chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Hallo"))
-    lookahead._chains["lookahead_user_d"] = chain
+    lookahead._chains["lookahead_user_d"] = {"freundin": chain}
 
     assert lookahead.consume_head("lookahead_user_d", "professor") is None
 
@@ -153,7 +153,7 @@ def test_consume_head_pops_head_and_promotes_next_level(monkeypatch):
         depth=2, kind="continue_new_topic", text="Zweite Stufe, ganz einzigartig",
         path="2", parent_path="1",
     ))
-    lookahead._chains["lookahead_user_e"] = chain
+    lookahead._chains["lookahead_user_e"] = {"robin": chain}
 
     result = lookahead.consume_head("lookahead_user_e", "robin")
 
@@ -181,7 +181,7 @@ def test_consume_head_skips_suppressed_level_and_tries_next(monkeypatch):
         text="Wie war eigentlich Ihr letzter Urlaub, erzaehlen Sie mal!",
         path="2", parent_path="1",
     ))
-    lookahead._chains[user_id] = chain
+    lookahead._chains[user_id] = {"robin": chain}
 
     result = lookahead.consume_head(user_id, "robin")
 
@@ -198,7 +198,7 @@ def test_consume_head_returns_none_when_all_levels_suppressed(monkeypatch):
 
     chain = lookahead.Chain(user_id=user_id, persona_id="robin")
     chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Immer dasselbe, immer dasselbe."))
-    lookahead._chains[user_id] = chain
+    lookahead._chains[user_id] = {"robin": chain}
 
     result = lookahead.consume_head(user_id, "robin")
 
@@ -208,16 +208,28 @@ def test_consume_head_returns_none_when_all_levels_suppressed(monkeypatch):
 
 def test_discard_chain_removes_it_and_increments_interrupted_counter():
     chain = lookahead.Chain(user_id="lookahead_user_h", persona_id="robin")
-    lookahead._chains["lookahead_user_h"] = chain
+    lookahead._chains["lookahead_user_h"] = {"robin": chain}
 
-    lookahead.discard_chain("lookahead_user_h", reason="interrupted")
+    lookahead.discard_chain("lookahead_user_h", "robin", reason="interrupted")
 
     assert "lookahead_user_h" not in lookahead._chains
     assert lookahead._discarded_interrupted == 1
 
 
+def test_discard_chain_only_removes_the_given_personas_chain():
+    chain_a = lookahead.Chain(user_id="lookahead_user_multi", persona_id="robin")
+    chain_b = lookahead.Chain(user_id="lookahead_user_multi", persona_id="professor")
+    lookahead._chains["lookahead_user_multi"] = {"robin": chain_a, "professor": chain_b}
+
+    lookahead.discard_chain("lookahead_user_multi", "robin", reason="interrupted")
+
+    assert "robin" not in lookahead._chains["lookahead_user_multi"]
+    assert lookahead._chains["lookahead_user_multi"]["professor"] is chain_b
+    assert lookahead._discarded_interrupted == 1
+
+
 def test_discard_chain_is_a_safe_noop_when_no_chain_exists():
-    lookahead.discard_chain("lookahead_user_never_had_a_chain", reason="interrupted")
+    lookahead.discard_chain("lookahead_user_never_had_a_chain", "robin", reason="interrupted")
     assert lookahead._discarded_interrupted == 0
 
 
@@ -231,7 +243,7 @@ async def test_start_chain_for_speaker_registers_low_priority_task_and_senior_st
     monkeypatch.setattr(lookahead.config, "PERSONAS", {"robin": persona})
 
     lookahead.start_chain_for_speaker("lookahead_user_i", persona)
-    chain = lookahead._chains["lookahead_user_i"]
+    chain = lookahead._chains["lookahead_user_i"]["robin"]
     await asyncio.sleep(0.05)
 
     import priority
@@ -241,6 +253,78 @@ async def test_start_chain_for_speaker_registers_low_priority_task_and_senior_st
         await chain.build_task
     assert chain.build_task.cancelled()
     priority.senior_stream_finished()
+
+
+# --- ensure_chains(): eine Kette pro anwesender Persona ------------------
+
+def test_ensure_chains_fills_gaps_for_every_present_persona(monkeypatch):
+    monkeypatch.setattr(lookahead, "_spawn_build_task", lambda user_id, chain: None)
+    monkeypatch.setattr(lookahead, "_spawn_audio_task", lambda user_id, chain: None)
+    user_id = "lookahead_ensure_a"
+    robin = _StubPersona(id="robin")
+    wallner = _StubPersona(id="professor")
+
+    lookahead.ensure_chains(user_id, [robin, wallner], just_spoke_persona=robin)
+
+    assert "robin" in lookahead._chains[user_id]
+    assert "professor" in lookahead._chains[user_id]
+
+
+def test_ensure_chains_does_not_touch_an_existing_non_speaking_personas_chain(monkeypatch):
+    monkeypatch.setattr(lookahead, "_spawn_build_task", lambda user_id, chain: None)
+    monkeypatch.setattr(lookahead, "_spawn_audio_task", lambda user_id, chain: None)
+    user_id = "lookahead_ensure_b"
+    robin = _StubPersona(id="robin")
+    wallner = _StubPersona(id="professor")
+    existing_chain = lookahead.Chain(user_id=user_id, persona_id="professor", generation=3)
+    existing_chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Schon da."))
+    lookahead._chains[user_id] = {"professor": existing_chain}
+
+    lookahead.ensure_chains(user_id, [robin, wallner], just_spoke_persona=robin)
+
+    assert lookahead._chains[user_id]["professor"] is existing_chain
+    assert lookahead._chains[user_id]["professor"].generation == 3
+
+
+def test_ensure_chains_replaces_the_speakers_own_chain(monkeypatch):
+    monkeypatch.setattr(lookahead, "_spawn_build_task", lambda user_id, chain: None)
+    monkeypatch.setattr(lookahead, "_spawn_audio_task", lambda user_id, chain: None)
+    user_id = "lookahead_ensure_c"
+    robin = _StubPersona(id="robin")
+    old_chain = lookahead.Chain(user_id=user_id, persona_id="robin", generation=7)
+    lookahead._chains[user_id] = {"robin": old_chain}
+
+    lookahead.ensure_chains(user_id, [robin], just_spoke_persona=robin)
+
+    assert lookahead._chains[user_id]["robin"] is not old_chain
+
+
+def test_ensure_chains_with_no_speaker_only_fills_gaps(monkeypatch):
+    monkeypatch.setattr(lookahead, "_spawn_build_task", lambda user_id, chain: None)
+    monkeypatch.setattr(lookahead, "_spawn_audio_task", lambda user_id, chain: None)
+    user_id = "lookahead_ensure_d"
+    robin = _StubPersona(id="robin")
+    wallner = _StubPersona(id="professor")
+    existing_chain = lookahead.Chain(user_id=user_id, persona_id="robin", generation=9)
+    lookahead._chains[user_id] = {"robin": existing_chain}
+
+    lookahead.ensure_chains(user_id, [robin, wallner], just_spoke_persona=None)
+
+    assert lookahead._chains[user_id]["robin"] is existing_chain
+    assert "professor" in lookahead._chains[user_id]
+
+
+def test_chain_persona_ids_returns_all_current_owners_empty_list_otherwise():
+    assert lookahead.chain_persona_ids("lookahead_ids_empty") == []
+
+    chain_a = lookahead.Chain(user_id="lookahead_ids_a", persona_id="robin")
+    chain_b = lookahead.Chain(user_id="lookahead_ids_a", persona_id="professor")
+    lookahead._chains["lookahead_ids_a"] = {"robin": chain_a, "professor": chain_b}
+
+    assert set(lookahead.chain_persona_ids("lookahead_ids_a")) == {"robin", "professor"}
+
+    lookahead.discard_chain("lookahead_ids_a", "robin")
+    assert lookahead.chain_persona_ids("lookahead_ids_a") == ["professor"]
 
 
 def test_stats_delivery_rate_by_depth_computed_correctly():
@@ -264,7 +348,7 @@ def test_peek_head_branch_kind_returns_none_when_no_chain_exists():
 def test_peek_head_branch_kind_returns_linear_for_ready_linear_head():
     chain = lookahead.Chain(user_id="lookahead_peek_user_b", persona_id="freundin")
     chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Weiter geht's."))
-    lookahead._chains["lookahead_peek_user_b"] = chain
+    lookahead._chains["lookahead_peek_user_b"] = {"freundin": chain}
 
     assert lookahead.peek_head_branch_kind("lookahead_peek_user_b", "freundin") == "linear"
 
@@ -274,7 +358,7 @@ def test_peek_head_branch_kind_returns_fork_root_for_ready_question_head():
     chain.levels.append(lookahead.ChainLevel(
         depth=1, kind="continue", text="Was meinen Sie dazu?", branch_kind="fork_root",
     ))
-    lookahead._chains["lookahead_peek_user_c"] = chain
+    lookahead._chains["lookahead_peek_user_c"] = {"freundin": chain}
 
     assert lookahead.peek_head_branch_kind("lookahead_peek_user_c", "freundin") == "fork_root"
 
@@ -282,7 +366,7 @@ def test_peek_head_branch_kind_returns_fork_root_for_ready_question_head():
 def test_peek_head_branch_kind_returns_none_for_wrong_persona():
     chain = lookahead.Chain(user_id="lookahead_peek_user_d", persona_id="freundin")
     chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Weiter geht's."))
-    lookahead._chains["lookahead_peek_user_d"] = chain
+    lookahead._chains["lookahead_peek_user_d"] = {"freundin": chain}
 
     assert lookahead.peek_head_branch_kind("lookahead_peek_user_d", "professor") is None
 
@@ -292,49 +376,59 @@ def test_peek_head_branch_kind_returns_none_when_head_not_ready_yet():
     chain.levels.append(lookahead.ChainLevel(
         depth=1, kind="continue", text="", status="building",
     ))
-    lookahead._chains["lookahead_peek_user_e"] = chain
+    lookahead._chains["lookahead_peek_user_e"] = {"freundin": chain}
 
     assert lookahead.peek_head_branch_kind("lookahead_peek_user_e", "freundin") is None
 
 
-def test_debug_state_returns_none_when_no_chain_exists():
-    assert lookahead.debug_state("lookahead_debug_user_a") is None
+def test_debug_state_returns_empty_dict_when_no_chain_exists():
+    assert lookahead.debug_state("lookahead_debug_user_a") == {}
 
 
 def test_debug_state_reports_levels_built_and_target_depth():
     chain = lookahead.Chain(user_id="lookahead_debug_user_b", persona_id="freundin")
     chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Eins"))
     chain.levels.append(lookahead.ChainLevel(depth=2, kind="continue_new_topic", text="Zwei"))
-    lookahead._chains["lookahead_debug_user_b"] = chain
+    lookahead._chains["lookahead_debug_user_b"] = {"freundin": chain}
 
-    state = lookahead.debug_state("lookahead_debug_user_b")
+    state = lookahead.debug_state("lookahead_debug_user_b")["freundin"]
 
     assert state["persona_id"] == "freundin"
     assert state["levels_built"] == 2
     assert state["target_depth"] == lookahead.TARGET_DEPTH
 
 
+def test_debug_state_reports_entries_for_every_present_personas_chain():
+    chain_a = lookahead.Chain(user_id="lookahead_debug_multi", persona_id="freundin")
+    chain_b = lookahead.Chain(user_id="lookahead_debug_multi", persona_id="professor")
+    lookahead._chains["lookahead_debug_multi"] = {"freundin": chain_a, "professor": chain_b}
+
+    state = lookahead.debug_state("lookahead_debug_multi")
+
+    assert set(state.keys()) == {"freundin", "professor"}
+
+
 def test_debug_state_reports_whether_head_has_audio():
     chain = lookahead.Chain(user_id="lookahead_debug_user_c", persona_id="freundin")
     chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Eins", audio_ready=True))
-    lookahead._chains["lookahead_debug_user_c"] = chain
+    lookahead._chains["lookahead_debug_user_c"] = {"freundin": chain}
 
-    assert lookahead.debug_state("lookahead_debug_user_c")["head_has_audio"] is True
+    assert lookahead.debug_state("lookahead_debug_user_c")["freundin"]["head_has_audio"] is True
 
 
 def test_debug_state_head_has_audio_false_without_rendered_audio():
     chain = lookahead.Chain(user_id="lookahead_debug_user_d", persona_id="freundin")
     chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Eins"))
-    lookahead._chains["lookahead_debug_user_d"] = chain
+    lookahead._chains["lookahead_debug_user_d"] = {"freundin": chain}
 
-    assert lookahead.debug_state("lookahead_debug_user_d")["head_has_audio"] is False
+    assert lookahead.debug_state("lookahead_debug_user_d")["freundin"]["head_has_audio"] is False
 
 
 def test_debug_state_head_has_audio_false_when_chain_has_no_levels_yet():
     chain = lookahead.Chain(user_id="lookahead_debug_user_e", persona_id="freundin")
-    lookahead._chains["lookahead_debug_user_e"] = chain
+    lookahead._chains["lookahead_debug_user_e"] = {"freundin": chain}
 
-    state = lookahead.debug_state("lookahead_debug_user_e")
+    state = lookahead.debug_state("lookahead_debug_user_e")["freundin"]
     assert state["levels_built"] == 0
     assert state["head_has_audio"] is False
 
@@ -354,8 +448,8 @@ async def test_extend_chain_stops_writing_after_generation_bumped(monkeypatch):
 
     user_id = "lookahead_user_j"
     chain = lookahead.Chain(user_id=user_id, persona_id="robin")
-    lookahead._chains[user_id] = chain
-    task = asyncio.create_task(lookahead._extend_chain(user_id, chain.generation))
+    lookahead._chains[user_id] = {"robin": chain}
+    task = asyncio.create_task(lookahead._extend_chain(user_id, "robin", chain.generation))
 
     await asyncio.wait_for(started.wait(), timeout=1)
     chain.generation += 1  # simuliert einen Discard/Consume waehrend des Baus
@@ -390,9 +484,9 @@ async def test_render_head_audio_passes_persona_speaker_id_and_caches_with_it(mo
         depth=1, kind="continue", text="Hallo, wie geht's dir heute?",
         path="1", parent_path=None,
     ))
-    lookahead._chains[user_id] = chain
+    lookahead._chains[user_id] = {"robin": chain}
 
-    await lookahead._render_head_audio(user_id, chain.generation)
+    await lookahead._render_head_audio(user_id, "robin", chain.generation)
 
     assert captured["speaker_id"] == 3
     first_sentence = lookahead.autoturn._first_sentence("Hallo, wie geht's dir heute?")
@@ -568,7 +662,7 @@ async def test_extend_chain_builds_fork_root_and_queues_one_child_call_per_optio
     monkeypatch.setattr(lookahead.config, "PERSONAS", {"robin": persona})
 
     lookahead.start_chain_for_speaker("lookahead_fork_a", persona)
-    chain = lookahead._chains["lookahead_fork_a"]
+    chain = lookahead._chains["lookahead_fork_a"]["robin"]
     await asyncio.wait_for(chain.build_task, timeout=3.0)
 
     fork_root = next(lvl for lvl in chain.levels if lvl.branch_kind == "fork_root")
@@ -587,7 +681,7 @@ async def test_extend_chain_fork_children_get_letter_suffixes_a_b_c_in_option_or
     monkeypatch.setattr(lookahead.config, "PERSONAS", {"robin": persona})
 
     lookahead.start_chain_for_speaker("lookahead_fork_b", persona)
-    chain = lookahead._chains["lookahead_fork_b"]
+    chain = lookahead._chains["lookahead_fork_b"]["robin"]
     await asyncio.wait_for(chain.build_task, timeout=3.0)
 
     fork_root = next(lvl for lvl in chain.levels if lvl.branch_kind == "fork_root")
@@ -609,7 +703,7 @@ async def test_extend_chain_fork_always_gets_a_catchall_child_even_when_model_om
     monkeypatch.setattr(lookahead.config, "PERSONAS", {"robin": persona})
 
     lookahead.start_chain_for_speaker("lookahead_fork_c", persona)
-    chain = lookahead._chains["lookahead_fork_c"]
+    chain = lookahead._chains["lookahead_fork_c"]["robin"]
     await asyncio.wait_for(chain.build_task, timeout=3.0)
 
     fork_root = next(lvl for lvl in chain.levels if lvl.branch_kind == "fork_root")
@@ -628,7 +722,7 @@ async def test_extend_chain_catchall_child_trigger_condition_is_the_reserved_sen
     monkeypatch.setattr(lookahead.config, "PERSONAS", {"robin": persona})
 
     lookahead.start_chain_for_speaker("lookahead_fork_d", persona)
-    chain = lookahead._chains["lookahead_fork_d"]
+    chain = lookahead._chains["lookahead_fork_d"]["robin"]
     await asyncio.wait_for(chain.build_task, timeout=3.0)
 
     fork_root = next(lvl for lvl in chain.levels if lvl.branch_kind == "fork_root")
@@ -653,7 +747,7 @@ async def test_extend_chain_only_nearest_fork_gets_built_deeper_forks_stay_linea
     monkeypatch.setattr(lookahead.config, "PERSONAS", {"robin": persona})
 
     lookahead.start_chain_for_speaker("lookahead_fork_nested", persona)
-    chain = lookahead._chains["lookahead_fork_nested"]
+    chain = lookahead._chains["lookahead_fork_nested"]["robin"]
     await asyncio.wait_for(chain.build_task, timeout=3.0)
 
     node_4a = next(lvl for lvl in chain.levels if lvl.path == "4a")
@@ -669,7 +763,7 @@ async def test_extend_chain_respects_sentences_since_last_fork_floor(monkeypatch
     monkeypatch.setattr(lookahead.config, "PERSONAS", {"robin": persona})
 
     lookahead.start_chain_for_speaker("lookahead_fork_floor", persona)
-    chain = lookahead._chains["lookahead_fork_floor"]
+    chain = lookahead._chains["lookahead_fork_floor"]["robin"]
     await asyncio.wait_for(chain.build_task, timeout=3.0)
 
     root = next(lvl for lvl in chain.levels if lvl.depth == 1)
@@ -688,7 +782,7 @@ def test_consume_head_mode_a_promotes_single_linear_child_same_as_runde_one(monk
         depth=1, kind="continue", text="Erste Stufe, ganz einzigartig",
         path="1", parent_path=None,
     ))
-    lookahead._chains[user_id] = chain
+    lookahead._chains[user_id] = {"robin": chain}
 
     result = lookahead.consume_head(user_id, "robin")
 
@@ -718,7 +812,7 @@ def test_consume_head_mode_a_delivers_fork_root_question_as_a_normal_turn(monkey
         depth=2, kind="continue_new_topic", text="", path="2c", parent_path="1",
         branch_kind="fork_catchall", trigger_condition=lookahead.CATCHALL_TRIGGER,
     ))
-    lookahead._chains[user_id] = chain
+    lookahead._chains[user_id] = {"robin": chain}
 
     result = lookahead.consume_head(user_id, "robin")
 
@@ -739,7 +833,7 @@ def test_consume_head_mode_a_returns_none_when_cursor_awaits_reply_and_reply_not
         depth=2, kind="continue_new_topic", text="Musik-Fortsetzung",
         path="2b", parent_path="1", branch_kind="fork_option", trigger_condition="musik",
     ))
-    lookahead._chains[user_id] = chain
+    lookahead._chains[user_id] = {"robin": chain}
 
     assert lookahead.consume_head(user_id, "robin") is None
 
@@ -762,7 +856,7 @@ def _build_pending_fork_chain(user_id):
         depth=3, kind="continue_new_topic", text="Politik-Fortsetzung, Stufe 2",
         path="3a", parent_path="2a",
     ))
-    lookahead._chains[user_id] = chain
+    lookahead._chains[user_id] = {"robin": chain}
     return chain
 
 
@@ -797,7 +891,7 @@ def test_consume_head_mode_b_yes_no_synonym_table_matches_synonym_not_just_liter
         depth=2, kind="continue_new_topic", text="", path="2c", parent_path="1",
         branch_kind="fork_catchall", trigger_condition=lookahead.CATCHALL_TRIGGER,
     ))
-    lookahead._chains[user_id] = chain
+    lookahead._chains[user_id] = {"robin": chain}
 
     result = lookahead.consume_head(user_id, "robin", user_reply_text="Na klar, gerne!")
 
@@ -903,7 +997,7 @@ async def test_confirm_branch_bumps_generation_and_cancels_stale_build_task(monk
 
     user_id = "lookahead_prune_d"
     chain = _build_pending_fork_chain(user_id)
-    task = asyncio.create_task(lookahead._extend_chain(user_id, chain.generation))
+    task = asyncio.create_task(lookahead._extend_chain(user_id, "robin", chain.generation))
     chain.build_task = task
     await asyncio.wait_for(started.wait(), timeout=1)
 
@@ -953,17 +1047,17 @@ def test_debug_state_reports_branching_true_when_fork_root_present():
     chain.levels.append(lookahead.ChainLevel(
         depth=1, kind="continue", text="Frage?", path="1", parent_path=None, branch_kind="fork_root",
     ))
-    lookahead._chains["lookahead_debug_branch_a"] = chain
+    lookahead._chains["lookahead_debug_branch_a"] = {"freundin": chain}
 
-    assert lookahead.debug_state("lookahead_debug_branch_a")["branching"] is True
+    assert lookahead.debug_state("lookahead_debug_branch_a")["freundin"]["branching"] is True
 
 
 def test_debug_state_reports_branching_false_for_plain_linear_chain():
     chain = lookahead.Chain(user_id="lookahead_debug_branch_b", persona_id="freundin")
     chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Eins"))
-    lookahead._chains["lookahead_debug_branch_b"] = chain
+    lookahead._chains["lookahead_debug_branch_b"] = {"freundin": chain}
 
-    assert lookahead.debug_state("lookahead_debug_branch_b")["branching"] is False
+    assert lookahead.debug_state("lookahead_debug_branch_b")["freundin"]["branching"] is False
 
 
 def test_debug_state_levels_built_still_returns_int_count_not_error_with_fork_present():
@@ -977,8 +1071,8 @@ def test_debug_state_levels_built_still_returns_int_count_not_error_with_fork_pr
     chain.levels.append(lookahead.ChainLevel(
         depth=2, kind="continue_new_topic", text="B", path="2b", parent_path="1", branch_kind="fork_option",
     ))
-    lookahead._chains["lookahead_debug_branch_c"] = chain
+    lookahead._chains["lookahead_debug_branch_c"] = {"freundin": chain}
 
-    state = lookahead.debug_state("lookahead_debug_branch_c")
+    state = lookahead.debug_state("lookahead_debug_branch_c")["freundin"]
     assert isinstance(state["levels_built"], int)
     assert state["levels_built"] == 3

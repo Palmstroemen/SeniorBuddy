@@ -162,7 +162,7 @@ def lookahead_debug(user_id: str):
     laufenden Sitzungszustands, keine privilegierte Operation. {} statt
     404, wenn gerade keine Kette existiert - der Client soll dann
     einfach "nichts im Voraus" anzeigen, kein Fehlerfall."""
-    return lookahead.debug_state(user_id) or {}
+    return lookahead.debug_state(user_id)
 
 
 @app.get("/api/plugins")
@@ -811,7 +811,8 @@ async def run_turn(
 
     spawn_handoff_task(user_id, persona.id, handoff_outcome)
     await websocket.send_json({"type": "done", "persona": persona.id})
-    lookahead.start_chain_for_speaker(user_id, persona)
+    present_objs = [PERSONAS[pid] for pid in present if pid in PERSONAS]
+    lookahead.ensure_chains(user_id, present_objs, just_spoke_persona=persona)
 
 
 async def _deliver_auto_turn(
@@ -943,7 +944,8 @@ async def run_auto_turn(
         return False
 
     await _deliver_auto_turn(user_id, persona, websocket, present, full_response, topic_for_tagging)
-    lookahead.start_chain_for_speaker(user_id, persona)
+    present_objs = [PERSONAS[pid] for pid in present if pid in PERSONAS]
+    lookahead.ensure_chains(user_id, present_objs, just_spoke_persona=persona)
     return True
 
 
@@ -999,13 +1001,14 @@ async def room_chat(websocket: WebSocket, user_id: str):
                 phase = autoturn.decide_phase(elapsed, consecutive_auto_turns)
 
                 if phase == "quiet":
-                    # Eine Kette fuer eine Persona, die nicht mehr
-                    # anwesend ist, kann nie mehr ausgeliefert werden -
-                    # sonst bleibt sie fuer immer in lookahead._chains
-                    # haengen, ohne je als "stale" gezaehlt zu werden.
-                    stale_persona = lookahead.chain_persona_id(user_id)
-                    if stale_persona is not None and stale_persona not in present:
-                        lookahead.discard_chain(user_id, reason="stale")
+                    # Jede Kette (nicht mehr nur hoechstens eine) fuer
+                    # eine Persona, die nicht mehr anwesend ist, kann
+                    # nie mehr ausgeliefert werden - sonst bleibt sie
+                    # fuer immer in lookahead._chains haengen, ohne je
+                    # als "stale" gezaehlt zu werden.
+                    for stale_persona_id in lookahead.chain_persona_ids(user_id):
+                        if stale_persona_id not in present:
+                            lookahead.discard_chain(user_id, stale_persona_id, reason="stale")
                     continue
 
                 candidates = [
@@ -1027,7 +1030,7 @@ async def room_chat(websocket: WebSocket, user_id: str):
                     )
                     if completed:
                         wrapup_sent = True
-                        lookahead.discard_chain(user_id, reason="stale")
+                        lookahead.discard_chain(user_id, persona.id, reason="stale")
                     continue
 
                 # phase == "continue_eligible": Gate auf die ZULETZT
@@ -1114,14 +1117,26 @@ async def room_chat(websocket: WebSocket, user_id: str):
             # ausgeliefert werden, ganz ohne live LLM-Call. Passt
             # keiner (oder es gibt gar keine wartende Frage), verhaelt
             # sich das exakt wie bisher: Kette verwerfen, normal
-            # reaktiv weiter unten generieren.
-            chain_owner_id = lookahead.chain_persona_id(user_id)
+            # reaktiv weiter unten generieren. Mit mehreren moeglichen
+            # Ketten gleichzeitig ist "die eine Kette, die existiert"
+            # keine sinnvolle Frage mehr - stattdessen wird konkret die
+            # Kette der ZULETZT aktiven anwesenden Person geprueft
+            # (dieselbe "last active wins"-Logik wie beim
+            # "continue_eligible"-Zweig oben, hier aber frisch
+            # berechnet, da last_speaker_id dort nur innerhalb des
+            # TimeoutError-Zweigs existiert).
+            present_for_reply = room.present_personas(user_id)
+            chain_owner_id = (
+                max(present_for_reply, key=lambda p: room.last_active_ts(user_id, p) or 0.0)
+                if present_for_reply else None
+            )
             lookahead_confirmed = (
                 lookahead.consume_head(user_id, chain_owner_id, user_reply_text=user_text)
                 if chain_owner_id is not None else None
             )
             if lookahead_confirmed is None:
-                lookahead.discard_chain(user_id, reason="interrupted")
+                if chain_owner_id is not None:
+                    lookahead.discard_chain(user_id, chain_owner_id, reason="interrupted")
             else:
                 owner_persona = PERSONAS.get(chain_owner_id) or PERSONAS[FALLBACK_PERSONA]
                 memory.add_message(user_id, chain_owner_id, "user", user_text)
@@ -1131,7 +1146,8 @@ async def room_chat(websocket: WebSocket, user_id: str):
                     user_id, owner_persona, websocket, present,
                     lookahead_confirmed.text, memory.active_topic(user_id, chain_owner_id),
                 )
-                lookahead.start_chain_for_speaker(user_id, owner_persona)
+                present_objs = [PERSONAS[pid] for pid in present if pid in PERSONAS]
+                lookahead.ensure_chains(user_id, present_objs, just_spoke_persona=owner_persona)
                 continue
 
             candidates_map = {pid: p.address_name for pid, p in PERSONAS.items()}

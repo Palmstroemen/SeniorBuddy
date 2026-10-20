@@ -100,12 +100,12 @@ def test_lookahead_debug_endpoint_reports_chain_state():
     chain = lookahead.Chain(user_id="lookahead_debug_endpoint_user", persona_id="freundin")
     chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Eins", audio_ready=True))
     chain.levels.append(lookahead.ChainLevel(depth=2, kind="continue_new_topic", text="Zwei"))
-    lookahead._chains["lookahead_debug_endpoint_user"] = chain
+    lookahead._chains["lookahead_debug_endpoint_user"] = {"freundin": chain}
     try:
         with TestClient(main.app) as client:
             r = client.get("/api/lookahead-debug/lookahead_debug_endpoint_user")
         assert r.status_code == 200
-        data = r.json()
+        data = r.json()["freundin"]
         assert data["persona_id"] == "freundin"
         assert data["levels_built"] == 2
         assert data["target_depth"] == lookahead.TARGET_DEPTH

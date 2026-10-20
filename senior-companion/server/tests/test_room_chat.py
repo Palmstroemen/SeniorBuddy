@@ -87,11 +87,12 @@ def _reset_lookahead_state(monkeypatch):
     lookahead._discarded_suppressed = 0
     lookahead._discarded_stale = 0
     yield
-    for chain in lookahead._chains.values():
-        if chain.build_task is not None and not chain.build_task.done():
-            chain.build_task.cancel()
-        if chain.audio_task is not None and not chain.audio_task.done():
-            chain.audio_task.cancel()
+    for user_chains in lookahead._chains.values():
+        for chain in user_chains.values():
+            if chain.build_task is not None and not chain.build_task.done():
+                chain.build_task.cancel()
+            if chain.audio_task is not None and not chain.audio_task.done():
+                chain.audio_task.cancel()
     lookahead._chains.clear()
     lookahead._audio_cache.clear()
 
@@ -1136,7 +1137,7 @@ def test_room_chat_ready_lookahead_candidate_delivered_without_extra_llm_call(
             deadline = time.time() + 2.0
             chain = None
             while time.time() < deadline:
-                chain = lookahead._chains.get(user_id)
+                chain = lookahead._chains.get(user_id, {}).get("freundin")
                 if chain is not None and chain.levels:
                     break
                 time.sleep(0.01)
@@ -1168,7 +1169,7 @@ def test_room_chat_delivered_lookahead_text_matches_chain_head_exactly(
     chain.levels.append(lookahead.ChainLevel(
         depth=1, kind="continue", text="Vorbereiteter Kandidatensatz, ganz einzigartig.",
     ))
-    lookahead._chains["lookahead_room_b"] = chain
+    lookahead._chains["lookahead_room_b"] = {"freundin": chain}
 
     with TestClient(main.app) as client:
         with client.websocket_connect("/ws/room/lookahead_room_b") as ws:
@@ -1204,7 +1205,7 @@ def test_room_chat_ready_linear_lookahead_head_bypasses_pause_gate(
     chain.levels.append(lookahead.ChainLevel(
         depth=1, kind="continue", text="Bereite lineare Fortsetzung.", branch_kind="linear",
     ))
-    lookahead._chains["lookahead_room_c"] = chain
+    lookahead._chains["lookahead_room_c"] = {"freundin": chain}
 
     with TestClient(main.app) as client:
         with client.websocket_connect("/ws/room/lookahead_room_c") as ws:
@@ -1234,7 +1235,7 @@ def test_room_chat_ready_fork_root_lookahead_head_still_respects_pause_gate(
     chain.levels.append(lookahead.ChainLevel(
         depth=1, kind="continue", text="Was meinen Sie dazu?", branch_kind="fork_root",
     ))
-    lookahead._chains["lookahead_room_d"] = chain
+    lookahead._chains["lookahead_room_d"] = {"freundin": chain}
 
     with TestClient(main.app) as client:
         with client.websocket_connect("/ws/room/lookahead_room_d") as ws:
@@ -1282,7 +1283,7 @@ def test_room_chat_real_user_message_discards_chain_and_increments_stat(monkeypa
     user_id = "lookahead_room_d"
     chain = lookahead.Chain(user_id=user_id, persona_id="freundin")
     chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Wird nie gebraucht."))
-    lookahead._chains[user_id] = chain
+    lookahead._chains[user_id] = {"freundin": chain}
     room.touch(user_id, "freundin")
 
     with TestClient(main.app) as client:
@@ -1320,7 +1321,7 @@ def test_room_chat_confirms_branch_and_stores_it_as_real_history_on_matching_rep
         depth=2, kind="continue_new_topic", text="", path="2c", parent_path="1",
         branch_kind="fork_catchall", trigger_condition=lookahead.CATCHALL_TRIGGER,
     ))
-    lookahead._chains[user_id] = chain
+    lookahead._chains[user_id] = {"freundin": chain}
 
     with TestClient(main.app) as client:
         with client.websocket_connect(f"/ws/room/{user_id}") as ws:
@@ -1352,7 +1353,7 @@ def test_room_chat_discards_chain_normally_when_no_fork_pending_on_real_message(
         depth=2, kind="continue_new_topic", text="Naechster normaler Satz",
         path="2", parent_path="1",
     ))
-    lookahead._chains[user_id] = chain
+    lookahead._chains[user_id] = {"freundin": chain}
 
     with TestClient(main.app) as client:
         with client.websocket_connect(f"/ws/room/{user_id}") as ws:
@@ -1361,3 +1362,121 @@ def test_room_chat_discards_chain_normally_when_no_fork_pending_on_real_message(
 
     assert lookahead._chains.get(user_id) is None
     assert lookahead._discarded_interrupted == 1
+
+
+# --- Mehrere Personas anwesend: je eine eigene Kette (Session-Notiz -----
+# 2026-10-20: "wir unser Look-Ahead ja eigentlich fuer jede, derzeit
+# anwesende Persona braeuchten") --------------------------------------
+
+def test_room_chat_stale_cleanup_only_discards_the_departed_personas_chain(
+    monkeypatch, _fast_autoturn_timing,
+):
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield "sollte hier nie gebraucht werden"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.99)  # nie fortsetzen
+    user_id = "lookahead_multi_stale"
+    room.touch(user_id, "freundin")
+    room.touch(user_id, "professor")
+
+    freundin_chain = lookahead.Chain(user_id=user_id, persona_id="freundin")
+    professor_chain = lookahead.Chain(user_id=user_id, persona_id="professor")
+    lookahead._chains[user_id] = {"freundin": freundin_chain, "professor": professor_chain}
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect(f"/ws/room/{user_id}") as ws:
+            # professor "verlaesst" den Raum (Praesenz-Zeitstempel in die
+            # Vergangenheit versetzt) - freundin bleibt frisch beruehrt.
+            stale_ts = time.time() - room.PRESENCE_TIMEOUT_SECONDS - 10
+            room.touch(user_id, "professor", now=stale_ts)
+
+            deadline = time.time() + (autoturn.WRAPUP_WINDOW_SECONDS - 0.05)
+            while time.time() < deadline:
+                if "professor" not in lookahead.chain_persona_ids(user_id):
+                    break
+                _receive_json_with_timeout(ws, 0.05)
+
+    assert "professor" not in lookahead.chain_persona_ids(user_id)
+    assert lookahead._chains[user_id]["freundin"] is freundin_chain
+    assert lookahead._discarded_stale == 1
+
+
+def test_room_chat_branch_confirmation_mismatch_only_discards_last_active_personas_chain(
+    monkeypatch,
+):
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield "Normale reaktive Antwort."
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(
+        director, "pick_responder",
+        lambda present, addressed, last_active, now: addressed or "freundin",
+    )
+    user_id = "lookahead_multi_branch_mismatch"
+    room.touch(user_id, "freundin")  # aelter
+    room.touch(user_id, "professor")  # zuletzt aktiv - seine Kette wird geprueft
+
+    freundin_chain = lookahead.Chain(user_id=user_id, persona_id="freundin")
+    freundin_chain.levels.append(lookahead.ChainLevel(depth=1, kind="continue", text="Robins Satz"))
+    professor_chain = lookahead.Chain(user_id=user_id, persona_id="professor", cursor_path="1")
+    professor_chain.levels.append(lookahead.ChainLevel(
+        depth=2, kind="continue_new_topic", text="Politik-Fortsetzung",
+        path="2a", parent_path="1", branch_kind="fork_option", trigger_condition="politik",
+    ))
+    professor_chain.levels.append(lookahead.ChainLevel(
+        depth=2, kind="continue_new_topic", text="Musik-Fortsetzung",
+        path="2b", parent_path="1", branch_kind="fork_option", trigger_condition="musik",
+    ))
+    lookahead._chains[user_id] = {"freundin": freundin_chain, "professor": professor_chain}
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect(f"/ws/room/{user_id}") as ws:
+            ws.send_text("Erzaehl mir lieber vom Wetter")
+            _drain_until(ws, lambda m: m.get("type") == "done" and not m.get("auto"))
+
+    assert "professor" not in lookahead.chain_persona_ids(user_id)
+    assert lookahead._chains[user_id]["freundin"] is freundin_chain
+    assert lookahead._discarded_interrupted == 1
+
+
+def test_room_chat_director_picks_a_different_persona_whose_chain_is_already_ready(
+    monkeypatch, _fast_autoturn_timing,
+):
+    """Der eigentliche Nutzen dieser Runde: Robin hat zuletzt gesprochen,
+    der Regisseur waehlt aber Wallner als Naechsten - seine Kette steht
+    schon bereit und wird direkt ausgeliefert, statt reaktiv live
+    generiert zu werden (die ausgelieferte Antwort entspricht dem
+    vorgebauten Text, nicht dem gemockten reaktiven Fallback-Text -
+    ein Zaehler auf main.llm_client.stream waere hier kein verlaesslicher
+    Beweis, da ensure_chains() direkt NACH der Auslieferung ganz regulaer
+    neue Hintergrund-Ketten fuer beide anwesenden Personas anstoesst)."""
+
+    async def fake_stream(model, system_prompt, messages, max_tokens=400):
+        yield "sollte nicht gebraucht werden - Kette war schon fertig"
+
+    monkeypatch.setattr(main.llm_client, "stream", fake_stream)
+    monkeypatch.setattr(autoturn.random, "random", lambda: 0.0)  # immer fortsetzen
+    monkeypatch.setattr(
+        director, "pick_responder",
+        lambda present, addressed, last_active, now: addressed or "professor",
+    )
+    user_id = "lookahead_multi_ready_other"
+    room.touch(user_id, "professor")  # laenger still - waere laut Gewichtung ohnehin dran
+    room.touch(user_id, "freundin")  # zuletzt aktiv gesprochen
+
+    professor_chain = lookahead.Chain(user_id=user_id, persona_id="professor")
+    professor_chain.levels.append(lookahead.ChainLevel(
+        depth=1, kind="continue", text="Vorbereiteter Satz von Wallner, ganz einzigartig.",
+        branch_kind="linear",
+    ))
+    lookahead._chains[user_id] = {"professor": professor_chain}
+
+    with TestClient(main.app) as client:
+        with client.websocket_connect(f"/ws/room/{user_id}") as ws:
+            msgs = _drain_until(ws, lambda m: m.get("type") == "done" and m.get("auto"))
+
+    token_msgs = [m for m in msgs if m.get("type") == "token" and m.get("auto")]
+    assert any(
+        m["content"] == "Vorbereiteter Satz von Wallner, ganz einzigartig." for m in token_msgs
+    )

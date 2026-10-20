@@ -130,7 +130,7 @@ class _VirtualRoot:
 _VIRTUAL_ROOT = _VirtualRoot()
 
 
-_chains: dict = {}          # user_id -> Chain, hoechstens eine pro Nutzer:in
+_chains: dict = {}          # user_id -> {persona_id: Chain}, eine pro anwesender Persona
 _audio_cache: dict = {}     # (voice_id, speaker_id, text) -> wav bytes, nur fuer den jeweils aktuellen Head
 
 _levels_built = {d: 0 for d in range(1, 6)}      # Schluessel = Tiefe bei Erzeugung
@@ -150,14 +150,14 @@ _nodes_pruned_on_confirm = 0  # wie viele Geschwister-Knoten (+ Nachkommen) beim
 
 
 def _spawn_build_task(user_id: str, chain: Chain) -> None:
-    task = asyncio.create_task(_extend_chain(user_id, chain.generation))
+    task = asyncio.create_task(_extend_chain(user_id, chain.persona_id, chain.generation))
     priority.register_low_priority_task(task)
     task.add_done_callback(priority.unregister_low_priority_task)
     chain.build_task = task
 
 
 def _spawn_audio_task(user_id: str, chain: Chain) -> None:
-    task = asyncio.create_task(_render_head_audio(user_id, chain.generation))
+    task = asyncio.create_task(_render_head_audio(user_id, chain.persona_id, chain.generation))
     priority.register_low_priority_task(task)
     task.add_done_callback(priority.unregister_low_priority_task)
     chain.audio_task = task
@@ -166,18 +166,40 @@ def _spawn_audio_task(user_id: str, chain: Chain) -> None:
 def start_chain_for_speaker(user_id: str, persona) -> None:
     """Aufruf direkt nachdem run_turn()/run_auto_turn() ihre eigene
     "done"-Nachricht gesendet haben (siehe main.py) - macht das System
-    self-sustaining. Eine evtl. vorhandene Kette fuer eine ANDERE
-    Persona gilt als unterbrochen; eine fuer dieselbe Persona (kommt in
-    der Praxis kaum vor, siehe main.py-Integration) wird still ersetzt,
-    ohne einen Discard-Grund zu zaehlen."""
-    existing = _chains.get(user_id)
+    self-sustaining. Ersetzt NUR eine evtl. vorhandene Kette DIESER
+    EINEN Persona (still, ohne Discard-Grund zu zaehlen) - Ketten
+    anderer anwesender Personas fuer dieselbe Nutzer:in bleiben
+    unberuehrt (siehe ensure_chains() fuer den Mehr-Personas-Fall)."""
+    existing = _chains.get(user_id, {}).get(persona.id)
     if existing is not None:
-        reason = "interrupted" if existing.persona_id != persona.id else None
-        discard_chain(user_id, reason=reason)
+        discard_chain(user_id, persona.id, reason=None)
 
     chain = Chain(user_id=user_id, persona_id=persona.id)
-    _chains[user_id] = chain
+    _chains.setdefault(user_id, {})[persona.id] = chain
     _spawn_build_task(user_id, chain)
+
+
+def ensure_chains(user_id: str, present_personas: list, just_spoke_persona=None) -> None:
+    """Einmal pro Zug aufgerufen (main.py's run_turn()/run_auto_turn()
+    und der bestaetigter-Verzweigungs-Pfad in room_chat()) - ersetzt
+    die frueheren bloss-fuer-den-Sprecher-Aufrufe von
+    start_chain_for_speaker(). Baut IMMER eine frische Kette fuer
+    just_spoke_persona (identisch zum bisherigen Verhalten - was diese
+    Person gerade gesagt hat, ist jetzt echte Historie, gegen die eine
+    vorherige Kette nicht gebaut wurde). Baut zusaetzlich eine NEUE
+    Kette fuer jede ANDERE anwesende Persona, die noch keine hat -
+    eine bereits vorhandene Kette einer anwesenden, nicht sprechenden
+    Persona wird NICHT angeruehrt, nur Luecken werden gefuellt."""
+    if just_spoke_persona is not None:
+        start_chain_for_speaker(user_id, just_spoke_persona)
+
+    existing = _chains.get(user_id, {})
+    for persona in present_personas:
+        if just_spoke_persona is not None and persona.id == just_spoke_persona.id:
+            continue
+        if persona.id in existing:
+            continue
+        start_chain_for_speaker(user_id, persona)
 
 
 def _find_node(chain: Chain, path: str | None):
@@ -369,13 +391,13 @@ def _match_trigger(reply: str, trigger: str) -> bool:
     return trigger in reply_lower
 
 
-async def _fill_placeholder(user_id: str, generation: int, node: ChainLevel, persona) -> None:
+async def _fill_placeholder(user_id: str, persona_id: str, generation: int, node: ChainLevel, persona) -> None:
     """Fuellt EINEN vorher angelegten "building"-Platzhalter mit
     echtem Text (ein LLM-Call). Wird sowohl fuer normale Blatt-
     Erweiterung als auch fuer eine einzelne fork_option verwendet -
     der Unterschied liegt nur im letzten System-Prompt (siehe unten)."""
     global _levels_built, _forks_offered
-    chain = _chains.get(user_id)
+    chain = _chains.get(user_id, {}).get(persona_id)
     if chain is None or chain.generation != generation:
         return
 
@@ -415,7 +437,7 @@ async def _fill_placeholder(user_id: str, generation: int, node: ChainLevel, per
     # eingefuegter, jetzt ueberholter Platzhalter wird entfernt, damit
     # eine abgebrochene Generierung keine sichtbare Spur (leerer
     # "building"-Knoten) hinterlaesst.
-    chain = _chains.get(user_id)
+    chain = _chains.get(user_id, {}).get(persona_id)
     if chain is None:
         return
     if chain.generation != generation:
@@ -451,7 +473,7 @@ async def _fill_placeholder(user_id: str, generation: int, node: ChainLevel, per
         _spawn_audio_task(user_id, chain)
 
 
-async def _extend_chain(user_id: str, generation: int) -> None:
+async def _extend_chain(user_id: str, persona_id: str, generation: int) -> None:
     """Baut Platzhalter fuer Platzhalter, bis kein Blatt mehr
     Erweiterung braucht (jeder aktive Zweig hat TARGET_DEPTH erreicht,
     oder ist ein noch unbestaetigter fork_catchall, der nie weiter
@@ -459,7 +481,7 @@ async def _extend_chain(user_id: str, generation: int) -> None:
     wird (generation-Mismatch)."""
     try:
         while True:
-            chain = _chains.get(user_id)
+            chain = _chains.get(user_id, {}).get(persona_id)
             if chain is None or chain.generation != generation:
                 return
             persona = config.PERSONAS.get(chain.persona_id)
@@ -474,7 +496,7 @@ async def _extend_chain(user_id: str, generation: int) -> None:
                 pending = _make_placeholder(leaf)
                 chain.levels.append(pending)
 
-            await _fill_placeholder(user_id, generation, pending, persona)
+            await _fill_placeholder(user_id, persona_id, generation, pending, persona)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -482,15 +504,18 @@ async def _extend_chain(user_id: str, generation: int) -> None:
         # soll nicht stillschweigend als "Task exception was never
         # retrieved" verschwinden (gleiches Muster wie
         # main.py::_run_handoff_summary).
-        log.warning("Ketten-Aufbau fehlgeschlagen fuer user_id=%s.", user_id, exc_info=True)
+        log.warning(
+            "Ketten-Aufbau fehlgeschlagen fuer user_id=%s, persona_id=%s.",
+            user_id, persona_id, exc_info=True,
+        )
 
 
-async def _render_head_audio(user_id: str, generation: int) -> None:
+async def _render_head_audio(user_id: str, persona_id: str, generation: int) -> None:
     """Rendert NUR den ersten Satz des aktuellen Heads vor (die
     Standard-Chunk-Grenze, die der Client ohnehin zuerst anfragt) und
     legt das Ergebnis in _audio_cache ab, damit /api/tts (main.py) es
     findet, statt neu zu synthetisieren."""
-    chain = _chains.get(user_id)
+    chain = _chains.get(user_id, {}).get(persona_id)
     if chain is None or chain.generation != generation:
         return
     head = _head_child(chain)
@@ -510,10 +535,13 @@ async def _render_head_audio(user_id: str, generation: int) -> None:
         # _extend_chain oben) - ein Ausfall des Sprachdienstes darf
         # das Vorrendern nur wegfallen lassen, /api/tts synthetisiert
         # bei einem Cache-Miss ohnehin ganz normal live nach.
-        log.warning("Audio-Vorrendern fehlgeschlagen fuer user_id=%s.", user_id, exc_info=True)
+        log.warning(
+            "Audio-Vorrendern fehlgeschlagen fuer user_id=%s, persona_id=%s.",
+            user_id, persona_id, exc_info=True,
+        )
         return
 
-    chain = _chains.get(user_id)
+    chain = _chains.get(user_id, {}).get(persona_id)
     if chain is None or chain.generation != generation:
         return
     head_now = _head_child(chain)
@@ -652,8 +680,8 @@ def consume_head(user_id: str, persona_id: str, user_reply_text: str | None = No
     Modi None zurueck, wenn nichts Passendes bereitsteht (main.py faellt
     dann auf den bestehenden reaktiven Pfad zurueck, unveraendert zu
     Runde 1)."""
-    chain = _chains.get(user_id)
-    if chain is None or chain.persona_id != persona_id:
+    chain = _chains.get(user_id, {}).get(persona_id)
+    if chain is None:
         return None
 
     if user_reply_text is not None:
@@ -662,13 +690,18 @@ def consume_head(user_id: str, persona_id: str, user_reply_text: str | None = No
     return _consume_next_ready_child(chain, user_id, persona_id)
 
 
-def discard_chain(user_id: str, reason: str | None = None) -> None:
+def discard_chain(user_id: str, persona_id: str, reason: str | None = None) -> None:
     """reason = "interrupted" | "stale" | None (stiller Ersatz ohne
     Zaehlung, siehe start_chain_for_speaker). Sicherer No-Op, wenn
-    keine Kette existiert - das ist der Normalfall bei den meisten
-    echten Nachrichten."""
+    keine Kette fuer dieses (user_id, persona_id)-Paar existiert - das
+    ist der Normalfall bei den meisten echten Nachrichten. Verwirft NUR
+    die Kette DIESER Persona - andere Ketten derselben Nutzer:in
+    bleiben unberuehrt."""
     global _discarded_interrupted, _discarded_stale
-    chain = _chains.pop(user_id, None)
+    user_chains = _chains.get(user_id)
+    chain = user_chains.pop(persona_id, None) if user_chains is not None else None
+    if user_chains is not None and not user_chains:
+        _chains.pop(user_id, None)
     if chain is None:
         return
 
@@ -684,12 +717,14 @@ def discard_chain(user_id: str, reason: str | None = None) -> None:
         _discarded_stale += 1
 
 
-def chain_persona_id(user_id: str) -> str | None:
-    """Fuer room_chat()'s "quiet"-Zweig (main.py): erlaubt zu pruefen,
-    ob eine bestehende Kette zu einer Persona gehoert, die nicht mehr
-    anwesend ist, ohne dass main.py direkt in _chains greifen muss."""
-    chain = _chains.get(user_id)
-    return chain.persona_id if chain is not None else None
+def chain_persona_ids(user_id: str) -> list[str]:
+    """Alle persona_ids, die gerade eine Kette fuer diese Nutzer:in
+    haben - fuer room_chat()'s "quiet"-Zweig (main.py, Aufraeumen
+    verwaister Ketten abwesender Personas) und aehnliche "was laeuft
+    gerade"-Aufrufer. Leere Liste (nie None), wenn gar keine Kette
+    existiert - ein `for pid in chain_persona_ids(...)` braucht so
+    keine separate None-Pruefung."""
+    return list(_chains.get(user_id, {}).keys())
 
 
 def peek_head_branch_kind(user_id: str, persona_id: str) -> str | None:
@@ -700,8 +735,8 @@ def peek_head_branch_kind(user_id: str, persona_id: str) -> str | None:
     plain Fortsetzungen (linear) desselben, noch unfertigen Gedankens
     (Session-Notiz 2026-10-17). None, wenn keine passende Kette existiert
     oder der naechste Knoten noch nicht fertig gebaut ist."""
-    chain = _chains.get(user_id)
-    if chain is None or chain.persona_id != persona_id:
+    chain = _chains.get(user_id, {}).get(persona_id)
+    if chain is None:
         return None
     head = _head_child(chain)
     if head is None or head.status != "ready":
@@ -709,26 +744,26 @@ def peek_head_branch_kind(user_id: str, persona_id: str) -> str | None:
     return head.branch_kind
 
 
-def debug_state(user_id: str) -> dict | None:
+def debug_state(user_id: str) -> dict:
     """Fuer main.py's GET /api/lookahead-debug/{user_id} - eine sehr
     knappe Live-KPI-Anzeige waehrend der Entwicklung (bewusst nur
     Zahlen, kein Baum, keine Kandidaten-Texte - K.I.S.S., ausdruecklich
     als temporaeres Entwicklungs-Werkzeug gedacht, spaeter wieder
-    entfernen/verstecken). `branching` ist additiv (Runde 2) - das
-    bestehende Widget (N/5 + Lautsprecher-Icon) funktioniert
-    unveraendert weiter, ohne dieses Feld zu kennen. None, wenn gerade
-    keine Kette fuer diese Person existiert."""
-    chain = _chains.get(user_id)
-    if chain is None:
-        return None
-    head = _head_child(chain)
-    return {
-        "persona_id": chain.persona_id,
-        "levels_built": len(chain.levels),
-        "target_depth": TARGET_DEPTH,
-        "head_has_audio": head.audio_ready if head is not None else False,
-        "branching": any(lvl.branch_kind == "fork_root" for lvl in chain.levels),
-    }
+    entfernen/verstecken). Seit mehreren Ketten pro Nutzer:in moeglich
+    sind: ein Dict keyed by persona_id -> Kennzahlen (vorher ein
+    einzelnes flaches Dict oder None). {} (nie None), wenn gerade keine
+    Kette existiert."""
+    result = {}
+    for persona_id, chain in _chains.get(user_id, {}).items():
+        head = _head_child(chain)
+        result[persona_id] = {
+            "persona_id": persona_id,
+            "levels_built": len(chain.levels),
+            "target_depth": TARGET_DEPTH,
+            "head_has_audio": head.audio_ready if head is not None else False,
+            "branching": any(lvl.branch_kind == "fork_root" for lvl in chain.levels),
+        }
+    return result
 
 
 def stats() -> dict:
@@ -750,7 +785,7 @@ def stats() -> dict:
         "discarded_interrupted": _discarded_interrupted,
         "discarded_suppressed": _discarded_suppressed,
         "discarded_stale": _discarded_stale,
-        "active_chains": len(_chains),
+        "active_chains": sum(len(v) for v in _chains.values()),
         "forks_offered": _forks_offered,
         "forks_confirmed": _forks_confirmed,
         "forks_catchall_taken": _forks_catchall_taken,
