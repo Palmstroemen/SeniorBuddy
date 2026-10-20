@@ -97,7 +97,6 @@ const avatarStage = document.getElementById("avatarStage");
 const personaTabs = document.getElementById("personaTabs");
 const versionBadge = document.getElementById("versionBadge");
 const chatHint = document.getElementById("chatHint");
-const lookaheadKpi = document.getElementById("lookaheadKpi");
 const textInput = document.getElementById("textInput");
 const sendBtn = document.getElementById("sendBtn");
 const pauseBtn = document.getElementById("pauseBtn");
@@ -394,6 +393,8 @@ async function loadPersonas() {
     btn.innerHTML = `
       <span class="avatar-shape-bg avatar-icon-bg" data-persona="${p.id}">
         ${avatarSvg(p.id, FACE_DATA, faceFor(p.id))}
+        <span class="persona-lookahead-badge" data-persona="${p.id}" hidden
+              title="Lookahead: vorausgebaute Saetze"></span>
       </span>
       <span class="tab-label">${p.display_name}</span>
     `;
@@ -1670,24 +1671,30 @@ async function togglePlugin(id, enabled) {
 }
 
 // --- Lookahead-KPI (temporaeres Entwicklungs-Werkzeug) -----------------
-// Siehe index.html's Kommentar neben #lookaheadKpi - zeigt live, wie
-// viele Saetze lookahead.py im Voraus gebaut hat. Reine Poll-Anzeige,
-// keine neue WebSocket-Nachricht - haelt main.py's/lookahead.py's
-// bestehende Mechanik unangetastet, nur der neue, unauthentifizierte
-// GET /api/lookahead-debug/{user_id} wird dafuer abgefragt.
+// Zeigt live, pro Persona, wie viele Saetze lookahead.py im Voraus
+// gebaut hat - als kleine Ziffer unten rechts am jeweiligen Avatar in
+// der Titelleiste (Session-Notiz 2026-10-20: bewusst nur die blosse
+// Zahl, kein "N/5", da die Ziffer direkt am Avatar schon genug Kontext
+// hat). Reine Poll-Anzeige, keine neue WebSocket-Nachricht - haelt
+// main.py's/lookahead.py's bestehende Mechanik unangetastet, nur der
+// bestehende, unauthentifizierte GET /api/lookahead-debug/{user_id}
+// wird dafuer abgefragt (seit main.py's Mehr-Personas-Umbau liefert
+// er ein Dict keyed by persona_id statt eines einzelnen Zustands).
 const LOOKAHEAD_POLL_INTERVAL_MS = 500;
 
 async function pollLookaheadDebug() {
   try {
     const res = await fetch(`/api/lookahead-debug/${encodeURIComponent(USER_ID)}`);
     const data = await res.json();
-    if (!data || data.levels_built === undefined) {
-      lookaheadKpi.hidden = true;
-      return;
-    }
-    const audioMark = data.head_has_audio ? " 🔊" : "";
-    lookaheadKpi.textContent = `Lookahead: ${data.levels_built}/${data.target_depth}${audioMark}`;
-    lookaheadKpi.hidden = false;
+    personaTabs.querySelectorAll(".persona-lookahead-badge").forEach((badge) => {
+      const state = data[badge.dataset.persona];
+      if (!state) {
+        badge.hidden = true;
+        return;
+      }
+      badge.textContent = `${state.levels_built}${state.head_has_audio ? " 🔊" : ""}`;
+      badge.hidden = false;
+    });
   } catch (err) {
     // still scheitern - reine Entwicklungs-Anzeige, kein Fehlerfall
   }
