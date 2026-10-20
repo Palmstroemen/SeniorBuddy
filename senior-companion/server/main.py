@@ -1130,6 +1130,10 @@ async def room_chat(websocket: WebSocket, user_id: str):
 
             candidates_map = {pid: p.address_name for pid, p in PERSONAS.items()}
             addressed = room.detect_addressed_persona(user_text, candidates_map)
+            log.warning(
+                "DEBUG-ADDRESSING user_text=%r candidates_map=%r addressed=%r chain_owner_id=%r lookahead_confirmed=%r",
+                user_text, candidates_map, addressed, chain_owner_id, lookahead_confirmed,
+            )
             if addressed is not None:
                 room.touch(user_id, addressed)
 
