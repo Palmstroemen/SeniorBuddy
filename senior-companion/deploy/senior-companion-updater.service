@@ -5,8 +5,10 @@ Description=Fuehrt ein per /admin/update angefordertes Update aus (git pull + Ne
 Type=oneshot
 WorkingDirectory=/opt/SeniorBuddy/senior-companion
 ExecStart=/opt/SeniorBuddy/senior-companion/deploy/run_update.sh
-# Bewusst OHNE User= (laeuft als root): git pull + systemctl restart
-# sind privilegierte Operationen. Das ist hier sicherheitstechnisch
+# Bewusst OHNE User= (laeuft als root): systemctl restart ist eine
+# privilegierte Operation. git pull/pip install gibt run_update.sh per
+# runuser an die Besitzer:in des Repos ab, damit keine root-eigenen
+# Dateien im Repo entstehen. Das ist hier sicherheitstechnisch
 # unproblematisch, weil dieser Dienst NIE direkt vom Netz erreichbar
 # ist - er wird ausschliesslich lokal durch senior-companion-updater.path
 # ausgeloest, wenn sich die Marker-Datei aendert. Der Netz-erreichbare

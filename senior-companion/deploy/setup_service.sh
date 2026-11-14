@@ -28,7 +28,18 @@ if id senior-companion >/dev/null 2>&1; then
 else
   useradd --system --no-create-home --shell /usr/sbin/nologin senior-companion
 fi
-chown -R senior-companion:senior-companion "$APP_DIR"
+# Nur die Verzeichnisse, in die die Dienste wirklich schreiben
+# (ReadWritePaths= in den Units) - der Rest des Repos bleibt bei der
+# Person, die per git pull aktualisiert.
+mkdir -p "$APP_DIR/server/data" "$APP_DIR/speech-service/voices"
+chown -R senior-companion:senior-companion "$APP_DIR/server/data" "$APP_DIR/speech-service/voices"
+
+# Der Dienst-User liest per git rev-parse den laufenden Commit
+# (/api/version) - ohne das scheitert das an gits "dubious ownership".
+REPO_DIR="$(dirname "$APP_DIR")"
+if ! git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$REPO_DIR"; then
+  git config --system --add safe.directory "$REPO_DIR"
+fi
 
 echo ""
 echo "== Service-Unit installieren und starten =="

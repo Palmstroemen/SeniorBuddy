@@ -343,11 +343,17 @@ bevor der Server Anfragen annimmt.
 schreibt nur eine Marker-Datei (`admin_settings.UPDATE_MARKER_FILE`);
 `deploy/senior-companion-updater.path` (ein systemd-`.path`-Unit)
 bemerkt die Änderung und startet `deploy/run_update.sh` — läuft
-bewusst **ohne** `User=` (also als root), weil `git pull` +
-`systemctl restart` privilegierte Operationen sind, aber nie direkt
-vom Netz erreichbar ist: der FastAPI-Prozess (unprivilegiert, `User=
-senior-companion`) kann ausschließlich die Marker-Datei schreiben,
-sonst nichts. Getrennt getestet: die Git-Pull-Mechanik real gegen ein
+bewusst **ohne** `User=` (also als root), weil `systemctl restart`
+eine privilegierte Operation ist, aber nie direkt vom Netz erreichbar
+ist: der FastAPI-Prozess (unprivilegiert, `User=senior-companion`)
+kann ausschließlich die Marker-Datei schreiben, sonst nichts.
+`git pull` und `pip install` gibt das Skript per `runuser` an die
+Besitzer:in des Repos ab (wem `.git` gehört) — als root ausgeführt
+hinterließen sie root-eigene Dateien im Repo, an denen danach jeder
+manuelle `git pull` scheiterte. Das Skript gibt zu Beginn jedes Laufs
+auch solche Altlasten wieder an die Besitzer:in zurück (außer
+`server/data/` und `speech-service/voices/`, die bewusst dem
+Dienst-User gehören). Getrennt getestet: die Git-Pull-Mechanik real gegen ein
 lokales Fake-Origin-Repository (Fast-Forward-Pull funktioniert), das
 komplette Skript real mit einem Fake-`systemctl` (Kontrollfluss,
 Logging, Exit-Code) — nur die echten `systemctl`-Aufrufe selbst sind
