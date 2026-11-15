@@ -29,6 +29,14 @@ Beispiele (auf dem gmxtec):
       --moss-dir ~/moss_tts_nano_test/MOSS-TTS-Nano \\
       --ref ~/tts_bench/ref_thorsten.wav --label "MOSS-Nano Thorsten"
 
+  # MOSS-TTS-Realtime auf der GPU, im ROCm-Container (Repo/Modelle unter /work)
+  docker exec -e PYTHONPATH=/work/pydeps moss-rt python3 /bench/tts_bench.py \\
+      --out /results run --engine moss-realtime \\
+      --moss-dir /work/MOSS-TTS/moss_tts_realtime \\
+      --model-path /work/models/MOSS-TTS-Realtime \\
+      --codec-path /work/models/MOSS-Audio-Tokenizer \\
+      --ref /bench/ref_thorsten.wav --label "MOSS-Realtime Thorsten (GPU)"
+
   # Anhoer-Seite bauen und im Tailnet ausliefern
   python3 tts_bench.py serve
 
@@ -198,7 +206,147 @@ def _run_moss(args, texts, out_dir):
     return load_s, synth, meta
 
 
-ENGINES = {"piper": _run_piper, "moss": _run_moss}
+def _read_wav_mono(path):
+    """16-bit-WAV -> (float32-Array, Abtastrate), ohne torchaudio.load()
+    (braucht in aktuellen torchaudio-Versionen torchcodec, siehe _run_moss)."""
+    import numpy as np
+
+    with wave.open(str(Path(path).expanduser()), "rb") as w:
+        rate, channels, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        raw = w.readframes(w.getnframes())
+    if width != 2:
+        raise ValueError("Referenz muss 16-bit-WAV sein")
+    samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    return samples.reshape(-1, channels).mean(axis=1), rate
+
+
+def _run_moss_realtime(args, texts, out_dir):
+    """MOSS-TTS-Realtime (1,7B, fuer Sprachassistenten gebaut) auf der
+    GPU - nachgebaut nach example_llm_stream_to_tts.py aus dem MOSS-TTS-
+    Repo. Laeuft auf dem gmxtec im ROCm-Container "moss-rt" (Image
+    kyuz0/amd-strix-halo-comfyui, wie LTX) - torch.cuda ist dort die
+    Radeon-iGPU."""
+    import numpy as np
+    import torch
+    import torchaudio
+
+    moss_dir = Path(args.moss_dir).expanduser().resolve()
+    sys.path.insert(0, str(moss_dir))
+    from transformers import AutoModel, AutoTokenizer
+    from mossttsrealtime.modeling_mossttsrealtime import MossTTSRealtime
+    from mossttsrealtime.processing_mossttsrealtime import MossTTSRealtimeProcessor
+    from mossttsrealtime.streaming_mossttsrealtime import (
+        AudioStreamDecoder,
+        MossTTSRealtimeInference,
+        MossTTSRealtimeStreamingSession,
+    )
+
+    sample_rate = 24000
+    device = torch.device("cuda")
+    model_path = str(Path(args.model_path).expanduser())
+    codec_path = str(Path(args.codec_path).expanduser())
+
+    t0 = time.perf_counter()
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    processor = MossTTSRealtimeProcessor(tokenizer)
+    model = MossTTSRealtime.from_pretrained(
+        model_path, attn_implementation="sdpa", torch_dtype=torch.bfloat16
+    ).to(device).eval()
+    codec = AutoModel.from_pretrained(codec_path, trust_remote_code=True).eval().to(device)
+
+    samples, rate = _read_wav_mono(args.ref)
+    prompt_audio = torch.from_numpy(samples).unsqueeze(0)
+    if rate != sample_rate:
+        prompt_audio = torchaudio.functional.resample(prompt_audio, rate, sample_rate)
+    with torch.inference_mode():
+        encoded = codec.encode(prompt_audio.unsqueeze(0).to(device), chunk_duration=0.24)
+        prompt_tokens = encoded["audio_codes"].cpu().numpy().squeeze(1)
+    load_s = time.perf_counter() - t0
+
+    codebook_size = int(getattr(codec, "codebook_size", 1024))
+    system_prompt = processor.make_ensemble(prompt_tokens)
+    assistant_prefix_ids = tokenizer.encode("<|im_end|>\n<|im_start|>assistant\n")
+    assistant_prefix = np.full(
+        (len(assistant_prefix_ids), system_prompt.shape[1]),
+        fill_value=processor.audio_channel_pad,
+        dtype=np.int64,
+    )
+    assistant_prefix[:, 0] = assistant_prefix_ids
+    input_ids = np.concatenate([system_prompt, assistant_prefix], axis=0)
+
+    def synth(text, wav_path):
+        if args.seed is not None:
+            torch.manual_seed(args.seed)
+        start = time.perf_counter()
+        inferencer = MossTTSRealtimeInference(model, tokenizer, max_length=3000)
+        inferencer.reset_generation_state(keep_cache=False)
+        session = MossTTSRealtimeStreamingSession(
+            inferencer, processor, codec=codec, codec_sample_rate=sample_rate,
+            codec_encode_kwargs={"chunk_duration": 0.24},
+            prefill_text_len=processor.delay_tokens_len,
+            temperature=0.8, top_p=0.6, top_k=30,
+            repetition_penalty=1.1, repetition_window=50,
+        )
+        session.set_voice_prompt_tokens(prompt_tokens)
+        session.reset_turn(input_ids=input_ids, include_system_prompt=False, reset_cache=True)
+        decoder = AudioStreamDecoder(
+            codec, chunk_frames=3, overlap_frames=0,
+            decode_kwargs={"chunk_duration": -1}, device=device,
+        )
+        audio_eos_token = int(getattr(inferencer, "audio_eos_token", 1026))
+        chunks = []
+        first = None
+
+        def collect(frames):
+            nonlocal first
+            for frame in frames:
+                tokens = frame[0] if frame.dim() == 3 else frame
+                if tokens.dim() == 1:
+                    tokens = tokens.unsqueeze(0)
+                # wie _sanitize_tokens() im MOSS-Beispiel: bei EOS oder
+                # ungueltigen Codes abschneiden
+                bad = (tokens[:, 0] == audio_eos_token) | ((tokens < 0) | (tokens >= codebook_size)).any(dim=1)
+                if bad.any():
+                    tokens = tokens[: int(bad.nonzero()[0].item())]
+                if tokens.numel() == 0:
+                    continue
+                decoder.push_tokens(tokens.detach())
+                for wav in decoder.audio_chunks():
+                    if wav.numel():
+                        if first is None:
+                            first = time.perf_counter() - start
+                        chunks.append(wav.detach().cpu().float().numpy().reshape(-1))
+
+        with torch.inference_mode(), codec.streaming(batch_size=1):
+            # Ganzer Satz auf einmal - im Messstand liegt der Text schon
+            # fertig vor. (Im echten Betrieb koennte der Text sogar
+            # stueckweise aus dem LLM-Stream kommen.)
+            collect(session.push_text(text))
+            collect(session.end_text())
+            while not inferencer.is_finished:
+                frames = session.drain(max_steps=1)
+                if not frames:
+                    break
+                collect(frames)
+            final = decoder.flush()
+            if final is not None and final.numel():
+                chunks.append(final.detach().cpu().float().numpy().reshape(-1))
+        torch.cuda.synchronize()
+        total = time.perf_counter() - start
+
+        audio = np.clip(np.concatenate(chunks) if chunks else np.zeros(0, np.float32), -1.0, 1.0)
+        with wave.open(str(wav_path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sample_rate)
+            w.writeframes((audio * 32767.0).astype(np.int16).tobytes())
+        return (first if first is not None else total), total
+
+    meta = {"engine": "moss-tts-realtime", "ref": str(args.ref), "device": torch.cuda.get_device_name(0)}
+    return load_s, synth, meta
+
+
+ENGINES = {"piper": _run_piper, "moss": _run_moss, "moss-realtime": _run_moss_realtime}
 
 
 def cmd_run(args):
@@ -390,8 +538,10 @@ def main():
     run.add_argument("--voice", help="Piper: Stimmname. MOSS: eingebaute Stimme (statt --ref)")
     run.add_argument("--speaker-id", type=int, help="Piper: Sprecher bei Mehrsprecher-Stimmen")
     run.add_argument("--voices-dir", help="Piper: Stimmenordner (Standard: speech-service/voices)")
-    run.add_argument("--moss-dir", help="MOSS: Pfad zum MOSS-TTS-Nano-Repo")
-    run.add_argument("--ref", help="MOSS: Referenzaufnahme (wav) zum Stimmklonen")
+    run.add_argument("--moss-dir", help="MOSS: Pfad zum MOSS-TTS-Nano-Repo bzw. zu MOSS-TTS/moss_tts_realtime")
+    run.add_argument("--ref", help="MOSS: Referenzaufnahme (16-bit-wav) zum Stimmklonen")
+    run.add_argument("--model-path", help="MOSS-Realtime: Modellordner (MOSS-TTS-Realtime)")
+    run.add_argument("--codec-path", help="MOSS-Realtime: Tokenizer-Ordner (MOSS-Audio-Tokenizer)")
     run.add_argument("--threads", type=int, default=4, help="MOSS: CPU-Threads (Standard: 4)")
     run.add_argument("--seed", type=int, default=1234, help="MOSS: fester Zufallswert fuer vergleichbare Laeufe")
     run.set_defaults(func=cmd_run)
@@ -405,6 +555,10 @@ def main():
     args = parser.parse_args()
     if getattr(args, "engine", None) == "moss" and not args.moss_dir:
         parser.error("--engine moss braucht --moss-dir")
+    if getattr(args, "engine", None) == "moss-realtime" and not (
+        args.moss_dir and args.model_path and args.codec_path and args.ref
+    ):
+        parser.error("--engine moss-realtime braucht --moss-dir, --model-path, --codec-path und --ref")
     if getattr(args, "engine", None) == "piper" and not args.voice:
         parser.error("--engine piper braucht --voice")
     args.func(args)
